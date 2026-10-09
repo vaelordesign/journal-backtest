@@ -17,7 +17,7 @@ function verif(nom, cond, detail) {
 }
 
 (async () => {
-  const c = await lancer({ profil: path.join(ICI, 'profil-test'), neuf: true, port: 9341 });
+  const c = await lancer({ profil: path.join(require('os').tmpdir(), 'journal-backtest-profil-test'), neuf: true, port: 9341 });
   try {
     await c.aller(URL_APP);
     console.log('\n1. Premier lancement');
