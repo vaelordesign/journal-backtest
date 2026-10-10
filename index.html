@@ -366,6 +366,15 @@ details.plus{border:1px solid var(--bord);border-radius:var(--r);padding:0 12px;
 details.plus>summary{cursor:pointer;padding:10px 0;font-size:13px;color:var(--texte2);font-weight:600}
 details.plus[open]>summary{border-bottom:1px solid var(--bord);margin-bottom:10px}
 
+.part-ligne{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:7px 9px;border:1px solid var(--bord);border-radius:8px;margin-bottom:6px;background:var(--fond2)}
+.part-ligne .tp{width:34px}
+.part-ligne label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--texte2)}
+.part-ligne input{width:70px;padding:5px 7px;text-align:right}
+.part-ligne .choix-boutons button{padding:5px 10px;font-size:12px}
+.part-ligne .choix-boutons button.on[data-t="1"]{background:var(--vert);border-color:var(--vert);color:#04211f}
+.part-ligne .choix-boutons button.on[data-t="0"]{background:var(--rouge);border-color:var(--rouge);color:#fff}
+.choix-boutons button.on[data-v="partiels"]{background:var(--accent);border-color:var(--accent);color:#fff}
+
 /* ===================== SEANCE DE REPLAY ===================== */
 .jour-courant{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .jour-courant .grand-jour{font-size:22px;font-weight:700;min-width:0}
@@ -730,10 +739,45 @@ function rrDepuisPrix(sens, entree, stop, cible){
   var r = rDepuisPrix(sens, entree, stop, cible);
   return r !== null && r > 0 ? r : null;
 }
+// Plan de sorties partielles : TP1, TP2, TP3... avec la part de la position prise a chacun.
+// beApresTp1 : une fois TP1 touche, le stop du reste passe au point mort.
+var PLAN_DEFAUT = { niveaux: [{ r: 1, pct: 50 }, { r: 2, pct: 25 }, { r: 3, pct: 25 }], beApresTp1: true };
+function planDe(strategie){
+  var p = strategie && strategie.planSorties;
+  if (p && p.niveaux && p.niveaux.length) return p;
+  return PLAN_DEFAUT;
+}
+// R d'un trade a sorties partielles. partiels = [{ r: niveau du TP en R, pct: part de la position en %, touche }].
+// Chaque part dont le TP n'est pas touche sort au prix du reste : resteR (-1 = stop, 0 = BE, ou le R ecrit).
+// Exemple : TP1 1 R 50 % touche, TP2 2 R 25 % touche, TP3 3 R 25 % rate, reste au BE
+//           = 0,5 x 1 + 0,25 x 2 + 0,25 x 0 = +1 R.
+// Les parts doivent faire 100 % (a 0,5 % pres), sinon le resultat est inconnu (null).
+function rDesPartiels(partiels, resteR){
+  if (!partiels || !partiels.length) return null;
+  var tot = 0, sp = 0;
+  for (var i = 0; i < partiels.length; i++) {
+    var x = partiels[i];
+    if (!estNombre(x.pct) || x.pct < 0) return null;
+    sp += x.pct;
+    if (x.touche) { if (!estNombre(x.r)) return null; tot += x.pct * x.r; }
+    else { if (!estNombre(resteR)) return null; tot += x.pct * resteR; }
+  }
+  if (Math.abs(sp - 100) > 0.5) return null;
+  return arrondi(tot / sp, 4);
+}
+// Les parts venues d'un fichier (export TradingView) sont des sorties reelles, pas des TP prevus.
+function partielsImportes(t){ return !!(t && t.partiels && t.partiels.some(function(x){ return x.sortie; })); }
+// "TP1 ✓ · TP2 ✓ · TP3 ✗", ou "3 sorties" pour un trade importe
+function resumePartiels(t){
+  if (!t || t.issue !== 'partiels' || !t.partiels || !t.partiels.length) return '';
+  if (partielsImportes(t)) return t.partiels.length + ' sorties';
+  return t.partiels.map(function(x, i){ return 'TP' + (i + 1) + (x.touche ? ' ✓' : ' ✗'); }).join(' · ');
+}
 // Le resultat du trade en R, selon l'issue choisie :
-//   tp -> le R:R vise ; sl -> -1 ; be -> 0 ; autre -> le R ecrit (sortie manuelle, partiel...)
+//   tp -> le R:R vise ; sl -> -1 ; be -> 0 ; partiels -> la somme des parts ; autre -> le R ecrit
 function rDuTrade(t){
   if (!t) return null;
+  if (t.issue === 'partiels') return rDesPartiels(t.partiels, t.resteR);
   if (t.issue === 'sl') return -1;
   if (t.issue === 'be') return 0;
   if (t.issue === 'tp') {
@@ -991,6 +1035,18 @@ function issueSimulee(t, regle){
     if (t.mae >= f - EPS) return -1;          // le stop serre est touche
   }
   var m = t.mfe / f;                            // le MFE exprime dans le nouveau R
+  // plan complet TP1 / TP2 / TP3 : chaque part prend son TP si le MFE l'atteint ; sinon elle sort
+  // au stop, ou au point mort si TP1 a ete touche et que le plan monte le stop au BE.
+  if (regle.plan) {
+    var niv = regle.plan.niveaux.slice().sort(function(a, b){ return a.r - b.r; });
+    var tot = 0, sp = 0, touches = 0;
+    niv.forEach(function(x){
+      sp += x.pct;
+      if (m >= x.r - EPS) { tot += x.pct * x.r; touches++; }
+      else tot += x.pct * (touches && regle.plan.beApresTp1 ? 0 : -1);
+    });
+    return sp > 0 ? arrondi(tot / sp) : null;
+  }
   if (regle.partiel) {
     var a = regle.partiel.a, part = regle.partiel.part;
     if (m >= a - EPS) return arrondi(part * a + (1 - part) * (m >= regle.cible - EPS ? regle.cible : 0));
@@ -1038,6 +1094,28 @@ function atteintes(trades, niveaux){
 function balayageStop(trades, cible, fracs){
   var avec = trades.filter(function(t){ return estNombre(t.mfe) && estNombre(t.mae); });
   return fracs.map(function(f){ return { frac: f, stats: statsRegle(avec, { cible: cible, be: null, stopFrac: f }) }; });
+}
+
+// Trades notes avec TP1 / TP2 / TP3 : combien de fois chaque TP est touche, et ce qu'aurait
+// donne tout sortir a un seul TP. Une part qui rate son TP sort comme le reste de CE trade-la
+// (resteR) : c'est ce que tu as vraiment fait avec ton stop.
+function analysePartiels(trades){
+  var liste = trades.filter(function(t){ return t.issue === 'partiels' && !partielsImportes(t) && rDuTrade(t) !== null; });
+  var maxN = 0;
+  liste.forEach(function(t){ maxN = Math.max(maxN, t.partiels.length); });
+  var touches = [], toutA = [];
+  for (var k = 0; k < maxN; k++) {
+    var avec = liste.filter(function(t){ return t.partiels[k]; });
+    var nbT = avec.filter(function(t){ return t.partiels[k].touche; }).length;
+    touches.push({ k: k, nb: avec.length, nbTouche: nbT, part: avec.length ? nbT / avec.length : null,
+                   niveauMoyen: avec.length ? moyenneDe(avec.map(function(t){ return t.partiels[k].r; })) : null });
+    var vals = avec.map(function(t){
+      var x = t.partiels[k];
+      return { id: t.id, date: t.date, heure: t.heure, cree: t.cree, issue: 'autre', r: x.touche ? x.r : (estNombre(t.resteR) ? t.resteR : -1) };
+    });
+    toutA.push({ k: k, stats: statsR(vals), plan: statsR(avec) });
+  }
+  return { nb: liste.length, touches: touches, toutA: toutA, plan: statsR(liste) };
 }
 
 // ---------- simulateur de challenge (Monte-Carlo) ----------
@@ -1292,8 +1370,71 @@ function estListeTradesTV(entetes){
   var c = colonnesTV(entetes);
   return c.num >= 0 && c.type >= 0 && c.date >= 0 && c.profit >= 0;
 }
-// unR = combien de dollars vaut 1 R (le risque de chaque trade du script).
-function lireListeTradesTV(lignes, unR){
+// Le prix d'un point par contrat, retrouve dans le fichier lui-meme : profit / (points x contrats).
+// Arrondi a un multiplicateur connu (MNQ 2, MES 5, NQ 20, ES 50...) quand il en est tout proche.
+var MULTIPLICATEURS_CONNUS = [0.5, 1, 2, 5, 10, 20, 50, 100, 1000];
+function multiplicateurDeduit(sorties, entree){
+  var est = [];
+  sorties.forEach(function(x){
+    if (!estNombre(x.prix) || !estNombre(entree) || !estNombre(x.profit)) return;
+    var pts = Math.abs(x.prix - entree);
+    if (pts > EPS && Math.abs(x.profit) > EPS) est.push(Math.abs(x.profit) / (pts * (x.qte || 1)));
+  });
+  if (!est.length) return null;
+  est.sort(function(a, b){ return a - b; });
+  var m = centile(est, 0.5);
+  for (var i = 0; i < MULTIPLICATEURS_CONNUS.length; i++) {
+    if (Math.abs(m - MULTIPLICATEURS_CONNUS[i]) / MULTIPLICATEURS_CONNUS[i] < 0.04) return MULTIPLICATEURS_CONNUS[i];
+  }
+  return arrondi(m, 4);
+}
+// Un trade (toutes ses sorties) mis en R.
+//   stop connu : chaque sortie vaut (prix - entree) / (entree - stop), le plus juste ;
+//   sinon unR : le nombre de dollars que vaut 1 R pour toute la position.
+// Le MFE et le MAE viennent du Run-up et du Drawdown, ramenes a toute la position.
+function calculerTradeTV(g, unR, stop){
+  var Q = 0, ru = null, dd = null;
+  g.sorties.forEach(function(x){
+    var q = x.qte || 1;
+    Q += q;
+    if (estNombre(x.runup)) ru = Math.max(ru === null ? 0 : ru, Math.abs(x.runup) / q);
+    if (estNombre(x.drawdown)) dd = Math.max(dd === null ? 0 : dd, Math.abs(x.drawdown) / q);
+  });
+  var res = { r: null, mfe: null, mae: null, partiels: null, issue: g.sorties.length > 1 ? 'partiels' : 'autre', mode: null, stop: null };
+  var niveaux = null, risque = null;
+  if (estNombre(stop) && estNombre(g.entree) && (g.sens === 'short' ? stop > g.entree : stop < g.entree)) {
+    niveaux = g.sorties.map(function(x){ return rDepuisPrix(g.sens, g.entree, stop, x.prix); });
+    if (niveaux.some(function(x){ return x === null; })) niveaux = null;
+    else {
+      res.mode = 'stop'; res.stop = stop;
+      if (g.multiplicateur) risque = Math.abs(g.entree - stop) * Q * g.multiplicateur;
+    }
+  }
+  if (!niveaux && unR > 0) {
+    res.mode = 'unR'; risque = unR;
+    niveaux = g.sorties.map(function(x){ return (x.profit / (x.qte || 1)) * Q / unR; });
+  }
+  if (!niveaux) return res;
+  var r = 0;
+  g.sorties.forEach(function(x, i){ r += (x.qte || 1) / Q * niveaux[i]; });
+  res.r = arrondi(r, 3);
+  if (risque) {
+    if (ru !== null) res.mfe = arrondi(ru * Q / risque, 3);
+    if (dd !== null) res.mae = arrondi(dd * Q / risque, 3);
+  }
+  if (g.sorties.length > 1) {
+    res.partiels = g.sorties.map(function(x, i){
+      return { r: arrondi(niveaux[i], 3), pct: arrondi(100 * (x.qte || 1) / Q, 4), touche: true, sortie: true, prix: x.prix, heure: x.heure };
+    });
+  }
+  return res;
+}
+// Liste des trades du testeur de strategie OU du Replay Trading de TradingView (memes onglets).
+// TradingView coupe un trade en autant de lignes qu'il a de sorties partielles : chaque morceau a
+// son numero, mais la meme entree. On les regroupe : meme date, heure, sens et prix d'entree = un trade.
+// unR = combien de dollars vaut 1 R ; stops = { cle du trade: prix du stop } quand tu les connais.
+function lireListeTradesTV(lignes, unR, stops){
+  stops = stops || {};
   var res = { trades: [], ignores: [], colonnes: null, pertes: [] };
   if (!lignes || lignes.length < 2) { res.erreur = 'Le fichier est vide.'; return res; }
   var ent = lignes[0], c = colonnesTV(ent);
@@ -1311,6 +1452,7 @@ function lireListeTradesTV(lignes, unR){
     if (!groupes[num]) { groupes[num] = []; ordreNums.push(num); }
     groupes[num].push(l);
   });
+  var morceaux = [];
   ordreNums.forEach(function(num){
     var g = groupes[num], entree = null, sortie = null;
     g.forEach(function(l){
@@ -1328,26 +1470,49 @@ function lireListeTradesTV(lignes, unR){
     if (!dh || profit === null || !sens) { res.ignores.push({ ligne: num, raison: 'date, sens ou profit illisible' }); return; }
     var ru = c.runup >= 0 ? (versNombre(sortie[c.runup]) !== null ? versNombre(sortie[c.runup]) : versNombre(entree[c.runup])) : null;
     var dd = c.drawdown >= 0 ? (versNombre(sortie[c.drawdown]) !== null ? versNombre(sortie[c.drawdown]) : versNombre(entree[c.drawdown])) : null;
-    if (profit < 0) res.pertes.push(-profit);
-    var duree = null;
-    if (dhS && dhS.heure && dh.heure) {
-      var j = (dateUTC(dhS.date) - dateUTC(dh.date)) / 86400000;
-      duree = j * 1440 + minutesDe(dhS.heure) - minutesDe(dh.heure);
-      if (duree < 0) duree = null;
-    }
-    res.trades.push({
-      numTV: num, date: dh.date, heure: dh.heure, sens: sens,
+    var qte = c.qte >= 0 ? versNombre(entree[c.qte]) : null;
+    morceaux.push({
+      num: num, date: dh.date, heure: dh.heure, sens: sens,
       entree: c.prix >= 0 ? versNombre(entree[c.prix]) : null,
-      sortie: c.prix >= 0 ? versNombre(sortie[c.prix]) : null,
-      qte: c.qte >= 0 ? versNombre(entree[c.qte]) : null,
-      profit: profit, runup: ru !== null ? Math.abs(ru) : null, drawdownTV: dd !== null ? Math.abs(dd) : null,
-      duree: duree,
-      issue: 'autre',
-      r: unR > 0 ? arrondi(profit / unR, 3) : null,
-      mfe: unR > 0 && ru !== null ? arrondi(Math.abs(ru) / unR, 3) : null,
-      mae: unR > 0 && dd !== null ? arrondi(Math.abs(dd) / unR, 3) : null
+      prix: c.prix >= 0 ? versNombre(sortie[c.prix]) : null,
+      qte: qte && qte > 0 ? qte : 1,
+      profit: profit, runup: ru, drawdown: dd,
+      dateS: dhS ? dhS.date : dh.date, heureS: dhS ? dhS.heure : ''
     });
   });
+  // regroupement des morceaux d'un meme trade
+  var parCle = {}, cles = [];
+  morceaux.forEach(function(x){
+    var cle = x.date + ' ' + x.heure + '|' + x.sens + '|' + (x.entree !== null ? x.entree : '#' + x.num);
+    if (!parCle[cle]) { parCle[cle] = []; cles.push(cle); }
+    parCle[cle].push(x);
+  });
+  cles.forEach(function(cle){
+    var ms = parCle[cle].slice().sort(function(a, b){
+      var x = a.dateS + ' ' + a.heureS, y = b.dateS + ' ' + b.heureS;
+      return x < y ? -1 : (x > y ? 1 : (+a.num || 0) - (+b.num || 0));
+    });
+    var p0 = ms[0], der = ms[ms.length - 1];
+    var g = {
+      cle: cle, numTV: ms.map(function(x){ return x.num; }).join('+'), date: p0.date, heure: p0.heure, sens: p0.sens,
+      entree: p0.entree, sortie: der.prix,
+      qte: ms.reduce(function(a, x){ return a + x.qte; }, 0),
+      sorties: ms.map(function(x){ return { prix: x.prix, qte: x.qte, profit: x.profit, runup: x.runup, drawdown: x.drawdown, date: x.dateS, heure: x.heureS }; }),
+      profit: arrondi(ms.reduce(function(a, x){ return a + x.profit; }, 0), 4),
+      duree: null
+    };
+    if (der.heureS && p0.heure) {
+      var j = (dateUTC(der.dateS) - dateUTC(p0.date)) / 86400000;
+      var d = j * 1440 + minutesDe(der.heureS) - minutesDe(p0.heure);
+      if (d >= 0) g.duree = d;
+    }
+    g.multiplicateur = multiplicateurDeduit(g.sorties, g.entree);
+    var calc = calculerTradeTV(g, unR, stops[cle]);
+    Object.keys(calc).forEach(function(k){ g[k] = calc[k]; });
+    if (g.profit < 0) res.pertes.push(-g.profit);
+    res.trades.push(g);
+  });
+  res.trades.sort(function(a, b){ var x = a.date + ' ' + a.heure, y = b.date + ' ' + b.heure; return x < y ? -1 : (x > y ? 1 : 0); });
   return res;
 }
 // Proposition pour 1 R quand on ne le connait pas : la perte mediane du fichier.
@@ -2173,6 +2338,8 @@ function rendreSeance(){
             '<button class="vertb gros" id="seTermine">' + (tj.length ? 'Journée finie, jour suivant' : 'Aucun setup, jour suivant') + ' &rarr;<kbd>J</kbd></button>' +
             '<button class="gros" id="seSauter" title="Jour férié, données manquantes... : on passe sans le compter">Sauter ce jour<kbd>S</kbd></button>' +
           '</div>' +
+          '<div class="petit gris mt8">Tu passes tes ordres dans le <b>Replay Trading</b> de TradingView ? <a href="#import" data-aller="import">Importe la liste des trades</a> ' +
+            'à la fin de la séance, avant de fermer le replay : tes TP1, TP2, TP3 sont regroupés tout seuls.</div>' +
           '<div style="margin-top:14px">' +
             (tj.length ? tj.map(ligneTradeHtml).join('') +
               '<div class="petit gris droite">Total du jour : <b class="' + cls(rJour) + '">' + fmtR(rJour) + '</b></div>'
@@ -2240,9 +2407,21 @@ function rendreSeance(){
   brancherLignesTrades(el);
 }
 
+function libelleIssue(t){
+  if (t.issue === 'tp') return 'TP';
+  if (t.issue === 'sl') return 'SL';
+  if (t.issue === 'be') return 'BE';
+  if (t.issue === 'partiels' && t.partiels) {
+    if (partielsImportes(t)) return t.partiels.length + ' sorties';
+    return t.partiels.filter(function(x){ return x.touche; }).length + '/' + t.partiels.length + ' TP';
+  }
+  return '';
+}
+function prixCourt(v){ return estNombre(v) ? fmtNombre(v, Math.abs(v - Math.round(v)) < EPS ? 0 : 2) : '--'; }
 function ligneTradeHtml(t, avecDate){
   var r = rDuTrade(t);
   var sous = [seanceDuTrade(t)];
+  if (t.issue === 'partiels') sous.push(resumePartiels(t));
   if (t.qualite) sous.push(t.qualite);
   if (!conforme(t)) sous.push('hors plan');
   if (t.douteux) sous.push('douteux');
@@ -2383,7 +2562,7 @@ function ficheLectureSeule(t){
   var cf = confluencesDuTrade(t);
   var r = rDuTrade(t);
   modale('Trade du ' + fmtJour(t.date) + (t.heure ? ' à ' + t.heure : ''),
-    '<div class="grille g4">' + chiffre('Résultat', fmtR(r), (t.issue || '').toUpperCase(), cls(r)) + chiffre('Sens', libelleSens(t.sens), relationBiais(t)) +
+    '<div class="grille g4">' + chiffre('Résultat', fmtR(r), libelleIssue(t) || 'R', cls(r)) + chiffre('Sens', libelleSens(t.sens), relationBiais(t)) +
       chiffre('Séance', ech(seanceDuTrade(t)), JOURS_FR[jourSemaine(t.date)]) + chiffre('MFE', estNombre(t.mfe) ? fmtR(t.mfe) : '--', 'qualité ' + (t.qualite || '--')) + '</div>' +
     '<h4 class="mt12">Étapes présentes</h4><div class="etiquettes">' + cf.map(function(x){
       var on = !!(t.confl || {})[x.id];
@@ -2411,6 +2590,13 @@ async function formulaireTrade(id, defauts){
     tags: [], notes: '', liens: [], douteux: false, nbImages: 0, source: 'manuel', cree: Date.now()
   };
   var enregistre = false;
+  // sorties partielles : TP1, TP2, TP3... (le plan de la strategie est propose)
+  var planStrat = planDe(strat);
+  var avecPartiels = existant && t.issue === 'partiels' && t.partiels && t.partiels.length;
+  var parts = avecPartiels ? JSON.parse(JSON.stringify(t.partiels))
+    : planStrat.niveaux.map(function(x){ return { r: x.r, pct: x.pct, touche: false }; });
+  var resteMode = '-1', resteAuto = !avecPartiels, partsTouches = !!avecPartiels;
+  if (avecPartiels && estNombre(t.resteR) && t.resteR !== -1) resteMode = t.resteR === 0 ? '0' : 'autre';
 
   function blocConfluences(s){
     var cf = (s && s.confluences) || [];
@@ -2439,10 +2625,20 @@ async function formulaireTrade(id, defauts){
     '</div>' +
     '<div class="bloc-saisie"><h4>Résultat</h4>' +
       '<div class="ligne" style="align-items:flex-start;gap:14px">' +
-        choixBoutons('ftIssue', [['tp', 'TP', 'Cible touchée'], ['sl', 'SL -1', 'Stop touché'], ['be', 'BE 0', 'Sortie au point mort'], ['autre', 'Autre', 'Sortie manuelle, partiel, stop qui glisse...']], t.issue, 'grand') +
+        choixBoutons('ftIssue', [['tp', 'TP', 'Cible touchée'], ['sl', 'SL -1', 'Stop touché'], ['be', 'BE 0', 'Sortie au point mort'], ['partiels', 'TP1 TP2 TP3', 'Sorties partielles : une part de la position à chaque TP'], ['autre', 'Autre', 'Sortie manuelle, stop qui glisse...']], t.issue, 'grand') +
         '<label class="champ mb0" style="width:120px"><span>R:R visé</span><input id="ftRR" inputmode="decimal" value="' + (estNombre(t.rrCible) ? fmtNombre(t.rrCible, 2).replace(/,?0+$/, '') : '') + '" placeholder="3"></label>' +
         '<label class="champ mb0" style="width:120px" id="ftRBoite"><span>Résultat en R</span><input id="ftR" inputmode="decimal" value="' + (estNombre(t.r) && t.issue === 'autre' ? String(t.r).replace('.', ',') : '') + '" placeholder="ex. 1,5"></label>' +
         '<div class="pousse droite"><div class="petit gris">Ce trade</div><div class="r-apercu" id="ftApercu">--</div></div>' +
+      '</div>' +
+      '<div id="ftPartBoite" style="display:none;margin-top:12px">' +
+        '<div class="aide" style="margin:0 0 8px">Une part de la position à chaque TP. Clique <b>Touché</b> pour chaque TP atteint ; les parts qui ont raté leur TP sortent au prix choisi en dessous.</div>' +
+        '<div id="ftPartLignes"></div>' +
+        '<div class="ligne mt8"><button class="pt" type="button" id="ftPartAjout">+ un TP</button>' +
+          '<button class="pt fantome" type="button" id="ftPartPlan">Reprendre le plan de la stratégie</button><span class="petit" id="ftPartSomme"></span></div>' +
+        '<div class="ligne mt8"><span class="petit gris">Les parts qui ont raté leur TP sont sorties à</span>' +
+          choixBoutons('ftReste', [['-1', 'Stop -1'], ['0', 'BE 0'], ['autre', 'Autre']], resteMode) +
+          '<input id="ftResteR" inputmode="decimal" style="width:90px" placeholder="ex. 0,5" value="' + (resteMode === 'autre' ? String(t.resteR).replace('.', ',') : '') + '">' +
+        '</div>' +
       '</div>' +
     '</div>' +
     '<div class="bloc-saisie"><h4>Jusqu\'où le prix est allé (pour l\'optimiseur de cible et de stop)</h4>' +
@@ -2523,7 +2719,85 @@ async function formulaireTrade(id, defauts){
     strat = strategieDeCampagne(c2);
     $('#ftConflBoite', m).innerHTML = blocConfluences(strat);
     brancherConfl();
+    planStrat = planDe(strat);
+    if (!partsTouches) { parts = planStrat.niveaux.map(function(x){ return { r: x.r, pct: x.pct, touche: false }; }); peindreParts(); }
     maj();
+  };
+
+  // ----- sorties partielles -----
+  function prixDuNiveau(r){
+    var f = lireForm();
+    if (!f.sens || f.e === null || f.s === null || !estNombre(r)) return '';
+    var pts = Math.abs(f.e - f.s);
+    if (!(pts > 0)) return '';
+    return '= ' + prixCourt(f.sens === 'short' ? f.e - r * pts : f.e + r * pts);
+  }
+  function peindreParts(){
+    var boite = $('#ftPartLignes', m);
+    boite.innerHTML = parts.map(function(x, i){
+      return '<div class="part-ligne" data-i="' + i + '">' +
+        '<b class="tp">TP' + (i + 1) + '</b>' +
+        '<label>niveau <input data-c="r" inputmode="decimal" value="' + (estNombre(x.r) ? String(arrondi(x.r, 3)).replace('.', ',') : '') + '"> R</label>' +
+        '<label>part <input data-c="pct" inputmode="decimal" value="' + (estNombre(x.pct) ? String(arrondi(x.pct, 2)).replace('.', ',') : '') + '"> %</label>' +
+        '<div class="choix-boutons"><button type="button" data-t="1"' + (x.touche ? ' class="on"' : '') + '>Touché</button><button type="button" data-t="0"' + (!x.touche ? ' class="on"' : '') + '>Raté</button></div>' +
+        '<span class="petit gris prix-tp"></span>' +
+        (parts.length > 1 ? '<button type="button" class="pt fantome" data-sup title="Retirer ce TP">&#10005;</button>' : '') +
+      '</div>';
+    }).join('');
+    $$('.part-ligne', boite).forEach(function(l){
+      var i = +l.dataset.i;
+      $$('input', l).forEach(function(inp){
+        inp.oninput = function(){ var v = lireR(inp.value); parts[i][inp.dataset.c] = estNombre(v) ? v : null; partsTouches = true; maj(); };
+      });
+      $$('[data-t]', l).forEach(function(b){
+        b.onclick = function(){
+          var on = b.dataset.t === '1';
+          // toucher TP2, c'est avoir touche TP1 ; rater TP1, c'est rater tout ce qui suit
+          parts.forEach(function(x, k){ if (on && k <= i) x.touche = true; if (!on && k >= i) x.touche = false; });
+          partsTouches = true;
+          if (resteAuto) resteMode = parts.some(function(x){ return x.touche; }) && planStrat.beApresTp1 ? '0' : '-1';
+          peindreParts(); peindreReste(); maj();
+        };
+      });
+      var sup = $('[data-sup]', l);
+      if (sup) sup.onclick = function(){ parts.splice(i, 1); partsTouches = true; peindreParts(); maj(); };
+    });
+  }
+  function majParts(){
+    var sp = parts.reduce(function(a, x){ return a + (estNombre(x.pct) ? x.pct : 0); }, 0);
+    $('#ftPartSomme', m).innerHTML = Math.abs(sp - 100) <= 0.5 ? '<span class="vert">Parts : 100 %</span>'
+      : '<span class="rouge">Parts : ' + fmtNombre(sp, 0) + ' % (il faut 100 %)</span>';
+    $$('#ftPartLignes .part-ligne', m).forEach(function(l){
+      var x = parts[+l.dataset.i], p = $('.prix-tp', l);
+      if (x && p) p.textContent = prixDuNiveau(x.r);
+    });
+  }
+  function peindreReste(){
+    var b = $('#ftReste', m);
+    b.dataset.v = resteMode;
+    $$('button', b).forEach(function(x){ x.classList.toggle('on', x.dataset.v === resteMode); });
+    $('#ftResteR', m).style.display = resteMode === 'autre' ? '' : 'none';
+  }
+  function resteVal(){
+    if (resteMode === '-1') return -1;
+    if (resteMode === '0') return 0;
+    var v = lireR($('#ftResteR', m).value);
+    return estNombre(v) ? v : null;
+  }
+  $$('#ftReste button', m).forEach(function(b){
+    b.onclick = function(){ resteMode = b.dataset.v; resteAuto = false; peindreReste(); maj(); if (resteMode === 'autre') $('#ftResteR', m).focus(); };
+  });
+  $('#ftResteR', m).addEventListener('input', function(){ maj(); });
+  $('#ftPartAjout', m).onclick = function(){
+    var der = parts[parts.length - 1];
+    parts.push({ r: der && estNombre(der.r) ? der.r + 1 : 1, pct: 0, touche: false });
+    partsTouches = true; peindreParts(); maj();
+  };
+  $('#ftPartPlan', m).onclick = function(){
+    planStrat = planDe(strat);
+    parts = planStrat.niveaux.map(function(x){ return { r: x.r, pct: x.pct, touche: false }; });
+    resteAuto = true; resteMode = '-1'; partsTouches = false;
+    peindreParts(); peindreReste(); maj();
   };
   ['ftHeure', 'ftRR', 'ftR', 'ftMfe', 'ftMae', 'ftEntree', 'ftStop', 'ftCible', 'ftSortie'].forEach(function(k){
     $('#' + k, m).addEventListener('input', maj);
@@ -2564,10 +2838,14 @@ async function formulaireTrade(id, defauts){
     $('#ftPrixAide', m).innerHTML = aide.join(' · ');
     // case R visible seulement pour "Autre"
     $('#ftRBoite', m).style.opacity = f.issue === 'autre' ? '1' : '.45';
+    $('#ftRR', m).closest('label').style.opacity = f.issue === 'partiels' ? '.45' : '1';
     var rr = f.rr;
-    var r = f.issue === 'tp' ? (estNombre(rr) && rr > 0 ? rr : null) : f.issue === 'sl' ? -1 : f.issue === 'be' ? 0 : f.issue === 'autre' ? (estNombre(f.r) ? f.r : null) : null;
+    var r = f.issue === 'tp' ? (estNombre(rr) && rr > 0 ? rr : null) : f.issue === 'sl' ? -1 : f.issue === 'be' ? 0 :
+      f.issue === 'partiels' ? rDesPartiels(parts, resteVal()) : f.issue === 'autre' ? (estNombre(f.r) ? f.r : null) : null;
+    $('#ftPartBoite', m).style.display = f.issue === 'partiels' ? '' : 'none';
+    if (f.issue === 'partiels') majParts();
     var ap = $('#ftApercu', m);
-    ap.textContent = r === null ? (f.issue === 'tp' ? 'R:R ?' : '--') : fmtR(r);
+    ap.textContent = r === null ? (f.issue === 'tp' ? 'R:R ?' : (f.issue === 'partiels' ? 'parts ?' : '--')) : fmtR(r);
     ap.className = 'r-apercu ' + (r === null ? 'gris' : cls(r));
     $('#ftR', m).className = f.issue === 'autre' && f.r !== null ? (isNaN(f.r) ? 'r-faux' : (f.r > 0 ? 'r-pos' : (f.r < 0 ? 'r-neg' : ''))) : '';
     // plan
@@ -2583,6 +2861,8 @@ async function formulaireTrade(id, defauts){
     $('#ftBiaisAide', m).innerHTML = !b || !f.sens ? '' : relationBiais({ biais: b, sens: f.sens }) === 'Contre le biais' ? '<span class="jaune">Ce trade va contre ton biais du jour.</span>' : (b === 'neutre' ? '' : '<span class="vert">Dans le sens du biais.</span>');
     return { r: r, f: f, coches: coches };
   }
+  peindreParts();
+  peindreReste();
   maj();
 
   var ph = await installerPhotos('trade:' + t.id, $('#ftPhotos', m), { vide: 'Aucune capture. Dans TradingView : appareil photo, « Copier l\'image » (Ctrl+Maj+S), puis Ctrl+V ici.' });
@@ -2593,7 +2873,17 @@ async function formulaireTrade(id, defauts){
     var date = $('#ftDate', m).value;
     if (!dateValide(date)) { toast('La date du replay est invalide.', 'rougef'); return false; }
     if (!f.sens) { toast('Choisis Long ou Short.', 'rougef'); return false; }
-    if (!f.issue) { toast('Choisis le résultat : TP, SL, BE ou Autre.', 'rougef'); return false; }
+    if (!f.issue) { toast('Choisis le résultat : TP, SL, BE, TP1 TP2 TP3 ou Autre.', 'rougef'); return false; }
+    if (f.issue === 'partiels') {
+      if (!parts.length) { toast('Ajoute au moins un TP.', 'rougef'); return false; }
+      var importes = parts.some(function(x){ return x.sortie; });
+      if (parts.some(function(x){ return !estNombre(x.r) || (!importes && x.r <= 0) || !estNombre(x.pct) || x.pct <= 0; })) { toast('Chaque TP a besoin d\'un niveau en R (plus grand que 0) et d\'une part en %.', 'rougef'); return false; }
+      var sp = parts.reduce(function(a, x){ return a + x.pct; }, 0);
+      if (Math.abs(sp - 100) > 0.5) { toast('Les parts doivent faire 100 % (tu en as ' + fmtNombre(sp, 0) + ' %).', 'rougef'); return false; }
+      if (parts.some(function(x){ return !x.touche; }) && resteVal() === null) { toast('Dis à quel prix sont sorties les parts qui ont raté leur TP.', 'rougef'); return false; }
+      var hautTouche = parts.filter(function(x){ return x.touche; }).reduce(function(a, x){ return Math.max(a, x.r); }, -Infinity);
+      if (f.mfe !== null && !isNaN(f.mfe) && hautTouche > 0 && f.mfe < hautTouche - EPS) { toast('Le max en ta faveur ne peut pas être plus petit que le plus haut TP touché (' + fmtR(hautTouche) + ').', 'rougef'); return false; }
+    }
     if (f.issue === 'tp' && !(estNombre(f.rr) && f.rr > 0)) { toast('Pour un TP, écris le R:R visé (3 pour un 1:3).', 'rougef'); $('#ftRR', m).focus(); return false; }
     if (f.issue === 'autre' && !estNombre(f.r)) { toast('Écris le résultat en R (ex. 1,5 ou -0,5).', 'rougef'); $('#ftR', m).focus(); return false; }
     if (f.mfe !== null && (isNaN(f.mfe) || f.mfe < 0)) { toast('Le max en ta faveur doit être un nombre positif (en R).', 'rougef'); return false; }
@@ -2606,7 +2896,21 @@ async function formulaireTrade(id, defauts){
     t.sens = f.sens;
     t.issue = f.issue;
     t.rrCible = estNombre(f.rr) && f.rr > 0 ? f.rr : null;
-    t.r = f.issue === 'autre' ? f.r : rDuTrade({ issue: f.issue, rrCible: t.rrCible });
+    if (f.issue === 'partiels') {
+      t.partiels = parts.map(function(x){
+        var o = { r: x.r, pct: x.pct, touche: !!x.touche };
+        if (x.sortie) { o.sortie = true; if (x.prix !== undefined) o.prix = x.prix; if (x.heure) o.heure = x.heure; }
+        return o;
+      });
+      t.resteR = parts.some(function(x){ return !x.touche; }) ? resteVal() : null;
+      var plusHaut = Math.max.apply(null, t.partiels.map(function(x){ return x.r; }));
+      t.rrCible = plusHaut > 0 ? plusHaut : t.rrCible;
+      t.r = rDesPartiels(t.partiels, t.resteR);
+    } else {
+      delete t.partiels;
+      t.resteR = null;
+      t.r = f.issue === 'autre' ? f.r : rDuTrade({ issue: f.issue, rrCible: t.rrCible });
+    }
     t.mfe = f.mfe;
     t.mae = f.mae === null && f.issue === 'sl' ? 1 : f.mae;
     t.entree = f.e; t.stop = f.s; t.cible = f.ci; t.sortie = f.so;
@@ -2888,6 +3192,7 @@ function formulaireStrategie(id, apres){
   var confl = s ? JSON.parse(JSON.stringify(s.confluences || [])) : [
     { id: 'c-' + uid(), nom: '', obligatoire: true }
   ];
+  var plan = JSON.parse(JSON.stringify(planDe(s)));
   var corps =
     '<div class="grille g2">' +
       '<label class="champ"><span>Nom</span><input id="fsNom" value="' + ech(s ? s.nom : '') + '" placeholder="Silver Bullet 10h-11h"></label>' +
@@ -2898,7 +3203,12 @@ function formulaireStrategie(id, apres){
     '<h4>Étapes et confluences cochables sur chaque trade</h4>' +
     '<div class="aide" style="margin-bottom:8px"><b>Obligatoire</b> = sans elle, le trade est « hors plan ». Les autres sont des confluences en plus : l\'écran Analyses te dira lesquelles améliorent vraiment tes résultats.</div>' +
     '<div id="fsListe"></div>' +
-    '<button class="pt" id="fsAjout" type="button">+ Ajouter une étape</button>';
+    '<button class="pt" id="fsAjout" type="button">+ Ajouter une étape</button>' +
+    '<h4 class="mt12" style="margin-top:18px">Plan de sorties partielles (TP1, TP2, TP3)</h4>' +
+    '<div class="aide" style="margin-bottom:8px">Proposé quand tu choisis « TP1 TP2 TP3 » dans un trade, et rejoué avec le MFE dans l\'écran Cible et stop.</div>' +
+    '<div id="fsPlan"></div>' +
+    '<div class="ligne mt8"><button class="pt" id="fsPlanAjout" type="button">+ un TP</button><span class="petit" id="fsPlanSomme"></span></div>' +
+    '<label class="pilule-interrupteur mt8" style="white-space:normal"><input type="checkbox" id="fsBE"' + (plan.beApresTp1 ? ' checked' : '') + '> Une fois TP1 touché, je monte le stop au point mort</label>';
   var m = modale(s ? 'Modifier la stratégie' : 'Nouvelle stratégie', corps,
     (s ? '<button class="dangereux" id="fsSupprimer" style="margin-right:auto">Supprimer</button>' : '') +
     '<button data-fermer>Annuler</button><button class="primaire" id="fsOk">Enregistrer</button>');
@@ -2927,14 +3237,44 @@ function formulaireStrategie(id, apres){
     });
   }
   peindre();
+  function peindrePlan(){
+    $('#fsPlan', m).innerHTML = plan.niveaux.map(function(x, i){
+      return '<div class="part-ligne" data-i="' + i + '"><b class="tp">TP' + (i + 1) + '</b>' +
+        '<label>niveau <input data-c="r" inputmode="decimal" value="' + (estNombre(x.r) ? String(x.r).replace('.', ',') : '') + '"> R</label>' +
+        '<label>part <input data-c="pct" inputmode="decimal" value="' + (estNombre(x.pct) ? String(x.pct).replace('.', ',') : '') + '"> %</label>' +
+        (plan.niveaux.length > 1 ? '<button class="pt fantome" data-sup type="button" title="Retirer">&#10005;</button>' : '') + '</div>';
+    }).join('');
+    $$('#fsPlan .part-ligne', m).forEach(function(l){
+      var i = +l.dataset.i;
+      $$('input', l).forEach(function(inp){ inp.oninput = function(){ var v = lireR(inp.value); plan.niveaux[i][inp.dataset.c] = estNombre(v) ? v : null; sommePlan(); }; });
+      var b = $('[data-sup]', l);
+      if (b) b.onclick = function(){ plan.niveaux.splice(i, 1); peindrePlan(); };
+    });
+    sommePlan();
+  }
+  function sommePlan(){
+    var sp = plan.niveaux.reduce(function(a, x){ return a + (estNombre(x.pct) ? x.pct : 0); }, 0);
+    $('#fsPlanSomme', m).innerHTML = Math.abs(sp - 100) <= 0.5 ? '<span class="vert">Parts : 100 %</span>' : '<span class="rouge">Parts : ' + fmtNombre(sp, 0) + ' % (il faut 100 %)</span>';
+  }
+  peindrePlan();
+  $('#fsPlanAjout', m).onclick = function(){
+    var der = plan.niveaux[plan.niveaux.length - 1];
+    plan.niveaux.push({ r: der && estNombre(der.r) ? der.r + 1 : 1, pct: 0 });
+    peindrePlan();
+  };
   $('#fsAjout', m).onclick = function(){ confl.push({ id: 'c-' + uid(), nom: '', obligatoire: false }); peindre(); var ins = $$('#fsListe input[type=text]', m); ins[ins.length - 1].focus(); };
   $('#fsOk', m).onclick = async function(){
     var rr = lireR($('#fsRR', m).value);
+    var niveaux = plan.niveaux.filter(function(x){ return estNombre(x.r) && x.r > 0 && estNombre(x.pct) && x.pct > 0; })
+      .sort(function(a, b){ return a.r - b.r; });
+    var spPlan = niveaux.reduce(function(a, x){ return a + x.pct; }, 0);
+    if (!niveaux.length || Math.abs(spPlan - 100) > 0.5) { toast('Le plan de sorties partielles doit faire 100 % (tu en as ' + fmtNombre(spPlan, 0) + ' %).', 'rougef'); return; }
     var v = {
       nom: $('#fsNom', m).value.trim() || 'Stratégie sans nom',
       rrDefaut: estNombre(rr) && rr > 0 ? rr : null,
       description: $('#fsDesc', m).value.trim(), regles: $('#fsRegles', m).value.trim(),
-      confluences: confl.filter(function(x){ return x.nom.trim(); }).map(function(x){ return { id: x.id, nom: x.nom.trim(), obligatoire: !!x.obligatoire }; })
+      confluences: confl.filter(function(x){ return x.nom.trim(); }).map(function(x){ return { id: x.id, nom: x.nom.trim(), obligatoire: !!x.obligatoire }; }),
+      planSorties: { niveaux: niveaux, beApresTp1: $('#fsBE', m).checked }
     };
     if (s) { Object.assign(s, v); await dbMettre('strategies', s); }
     else { s = Object.assign({ id: 'strat-' + uid(), cree: Date.now() }, v); await dbMettre('strategies', s); E.strategies.push(s); }
@@ -3170,6 +3510,7 @@ function tradesListe(){
     if (LISTE.resultat === 'p' && !(r < -EPS)) return false;
     if (LISTE.resultat === 'be' && !(r !== null && Math.abs(r) < EPS)) return false;
     if (LISTE.resultat === 'sansmfe' && estNombre(t.mfe)) return false;
+    if (LISTE.resultat === 'acompleter' && t.qualite) return false;
     if (LISTE.qualite && t.qualite !== LISTE.qualite) return false;
     if (q && normaliserTexte([t.notes, (t.tags || []).join(' '), t.symbole, seanceDuTrade(t)].join(' ')).indexOf(q) < 0) return false;
     return true;
@@ -3192,7 +3533,7 @@ function rendreTrades(){
     '<div class="carte serre"><div class="ligne">' +
       '<input id="liTexte" placeholder="Chercher dans les notes, étiquettes, séances..." value="' + ech(LISTE.texte) + '" style="max-width:300px">' +
       '<select id="liSens" style="width:auto"><option value="">Long et short</option><option value="long">Long</option><option value="short">Short</option></select>' +
-      '<select id="liRes" style="width:auto"><option value="">Tous les résultats</option><option value="g">Gagnants</option><option value="p">Perdants</option><option value="be">Point mort</option><option value="sansmfe">Sans MFE noté</option></select>' +
+      '<select id="liRes" style="width:auto"><option value="">Tous les résultats</option><option value="g">Gagnants</option><option value="p">Perdants</option><option value="be">Point mort</option><option value="sansmfe">Sans MFE noté</option><option value="acompleter">À compléter (sans qualité)</option></select>' +
       '<select id="liQual" style="width:auto"><option value="">Toutes les qualités</option>' + QUALITES.map(function(q){ return '<option>' + q + '</option>'; }).join('') + '</select>' +
       '<span class="petit gris">' + pluriel(liste.length, 'trade') + ' · <b class="' + cls(st.total) + '">' + fmtR(st.total) + '</b> · espérance ' + fmtR(st.moyenne) + '</span>' +
       '<span class="pousse"></span>' +
@@ -3208,7 +3549,7 @@ function rendreTrades(){
           '<td>' + fmtJour(t.date) + '</td><td class="num">' + (t.heure || '--') + '</td><td>' + ech(seanceDuTrade(t)) + '</td>' +
           (plusieurs ? '<td class="petit">' + ech(nomCampagne(t.campagneId)) + '</td>' : '') +
           '<td><span class="puce ' + (t.sens === 'short' ? 'r' : 'v') + '">' + libelleSens(t.sens) + '</span></td>' +
-          '<td class="num gras ' + cls(r) + '">' + fmtR(r) + ' <span class="mini gris">' + (t.issue === 'tp' ? 'TP' : t.issue === 'sl' ? 'SL' : t.issue === 'be' ? 'BE' : '') + '</span></td>' +
+          '<td class="num gras ' + cls(r) + '">' + fmtR(r) + ' <span class="mini gris">' + libelleIssue(t) + '</span></td>' +
           '<td class="num">' + (estNombre(t.rrCible) ? fmtNombre(t.rrCible, 1) : '--') + '</td>' +
           '<td class="num">' + (estNombre(t.mfe) ? fmtR(t.mfe, 1) : '<span class="gris3">--</span>') + '</td>' +
           '<td>' + puceQualite(t.qualite) + '</td>' +
@@ -3330,7 +3671,38 @@ function rendreAnalyses(){
       (g.symbole.length > 1 ? carte('Symbole', g.symbole, 'Symbole') : '') +
     '</div>' +
     '<div class="carte"><h3>Heure d\'entrée (par demi-heure)</h3>' + tableGroupes(g.heure, 'Heure', { total: tot }) + constat(g.heure, tot, 'demi-heures') + '</div>' +
-    '<div class="carte"><h3>Étiquettes</h3><p class="petit gris">Un trade peut avoir plusieurs étiquettes : il compte alors dans chacune.</p>' + tableGroupes(g.tags, 'Étiquette', { total: tot }) + constat(g.tags, tot, 'étiquettes') + '</div>';
+    '<div class="carte"><h3>Étiquettes</h3><p class="petit gris">Un trade peut avoir plusieurs étiquettes : il compte alors dans chacune.</p>' + tableGroupes(g.tags, 'Étiquette', { total: tot }) + constat(g.tags, tot, 'étiquettes') + '</div>' +
+    cartePartiels(tr);
+}
+// Ce que donnent tes vrais partiels (trades notes avec TP1, TP2, TP3 dans la fiche).
+function cartePartiels(tr){
+  var ap = analysePartiels(tr);
+  if (!ap.nb) return '';
+  var lignes = ap.touches.map(function(x){
+    return '<tr><td>TP' + (x.k + 1) + '</td><td class="num">' + fmtR(x.niveauMoyen, 1) + '</td><td class="num">' + x.nbTouche + ' / ' + x.nb + '</td><td class="num gras">' + fmtPct(x.part) + '</td></tr>';
+  }).join('');
+  var ligneStats = function(nom, st, total){
+    return '<tr' + (total ? ' class="total"' : '') + '><td>' + nom + '</td><td class="num">' + st.nb + '</td><td class="num">' + fmtPct(st.tauxReussite) + '</td>' +
+      '<td class="num gras ' + cls(st.moyenne) + '">' + fmtR(st.moyenne) + '</td><td class="num ' + cls(st.total) + '">' + fmtR(st.total, 1) + '</td></tr>';
+  };
+  var comp = ligneStats('Ton plan réel, avec partiels', ap.plan, true) +
+    ap.toutA.map(function(x){ return ligneStats('Tout sortir à TP' + (x.k + 1), x.stats); }).join('');
+  var meilleur = null;
+  ap.toutA.forEach(function(x){
+    if (x.stats.nb >= MIN_FIABLE && x.plan.moyenne !== null && x.stats.moyenne !== null) {
+      var e = x.stats.moyenne - x.plan.moyenne;
+      if (!meilleur || e > meilleur.e) meilleur = { k: x.k, e: e };
+    }
+  });
+  var verdict = ap.nb < MIN_FIABLE ? 'Encore trop peu de trades avec partiels (' + ap.nb + ') pour conclure.' :
+    (meilleur && meilleur.e > 0.05 ? 'Sur ces trades, <b>tout sortir à TP' + (meilleur.k + 1) + '</b> aurait rapporté <b>' + fmtNombre(meilleur.e, 2) + ' R de plus par trade</b> que tes partiels. Les partiels rassurent, mais ici ils coûtent.'
+      : '<b>Tes partiels tiennent la route :</b> aucune sortie à un seul TP ne fait nettement mieux sur ces trades.');
+  return '<div class="carte"><h3>Tes sorties partielles</h3>' +
+    '<p class="petit gris">Sur les ' + pluriel(ap.nb, 'trade noté', 'trades notés') + ' avec TP1, TP2, TP3 dans la fiche. Pour « tout sortir à un TP », une part qui rate ce TP sort comme le reste de ce trade-là (stop ou point mort).</p>' +
+    '<div class="deux-col"><div class="tableau-boite"><table class="auto"><thead><tr><th>TP</th><th class="num">Niveau moyen</th><th class="num">Touché</th><th class="num">%</th></tr></thead><tbody>' + lignes + '</tbody></table></div>' +
+    '<div class="tableau-boite"><table class="auto"><thead><tr><th>Façon de sortir</th><th class="num">Trades</th><th class="num">Réussite</th><th class="num">Espérance</th><th class="num">Total</th></tr></thead><tbody>' + comp + '</tbody></table></div></div>' +
+    '<div class="avis ' + (meilleur && meilleur.e > 0.05 && ap.nb >= MIN_FIABLE ? 'jaunef' : 'bleuf') + ' mt12 petit">' + verdict + '</div>' +
+    '<div class="aide">Pour rejouer ton plan avec d\'autres niveaux, va dans Cible et stop (il faut le MFE).</div></div>';
 }
 
 /* =======================================================================
@@ -3572,7 +3944,36 @@ function rendreSorties(){
         }).join('') + '</tbody></table></div>' +
         '<div class="aide">Un stop plus serré change aussi la taille de position : à risque égal en dollars, tu prends plus de contrats. Les frais pèsent alors plus lourd.</div>'
         : '<div class="petit gris">Il faut au moins 10 trades avec le MFE ET le MAE notés (tu en as ' + avecMae + '). Un trade stoppé reçoit 1 tout seul.</div>') +
-    '</div>';
+    '</div>' +
+    cartePlanPartiels(tr, best);
+}
+function strategieEnJeu(){
+  var c = E.filtre.campagne ? campagneDe(E.filtre.campagne) : campagneActive();
+  return strategieDeCampagne(c) || E.strategies[0] || null;
+}
+// Ton plan TP1 / TP2 / TP3 rejoue sur tous tes trades avec le MFE, contre ses variantes.
+function cartePlanPartiels(tr, best){
+  var s = strategieEnJeu(), plan = planDe(s);
+  var avec = tr.filter(function(t){ return estNombre(t.mfe) && t.mfe >= 0; });
+  var niv = plan.niveaux.slice().sort(function(a, b){ return a.r - b.r; });
+  var desc = niv.map(function(x, i){ return 'TP' + (i + 1) + ' à ' + fmtR(x.r, 1) + ' (' + fmtNombre(x.pct, 0) + ' %)'; }).join(', ') + (plan.beApresTp1 ? ', stop au BE après TP1' : '');
+  var lignes = [['<b>Ton plan</b> : ' + ech(desc), { plan: plan }, true],
+    [plan.beApresTp1 ? 'Le même plan, sans monter le stop au BE' : 'Le même plan, avec le stop au BE après TP1', { plan: { niveaux: plan.niveaux, beApresTp1: !plan.beApresTp1 } }]];
+  niv.forEach(function(x, i){
+    lignes.push(['Tout sortir à TP' + (i + 1) + ' (' + fmtR(x.r, 1) + ')' + (plan.beApresTp1 && i > 0 ? ', BE dès TP1' : ''), { cible: x.r, be: plan.beApresTp1 && i > 0 ? niv[0].r : null }]);
+  });
+  if (best) lignes.push(['Le meilleur réglage de la grille (cible ' + fmtR(best.cible, 1) + (best.be !== null ? ', BE dès ' + fmtR(best.be, 1) : '') + ')', { cible: best.cible, be: best.be }]);
+  var stPlan = statsRegle(avec, { plan: plan });
+  return '<div class="carte"><h3>Ton plan de sorties partielles, rejoué</h3>' +
+    '<p class="petit gris">Le plan de la stratégie « ' + ech(s ? s.nom : '') + ' » appliqué à tes ' + avec.length + ' trades avec MFE : chaque part prend son TP si le prix l\'a atteint, sinon elle sort au stop, ou au point mort si TP1 a été touché et que ton plan monte le stop. Modifie ton plan dans <a href="#campagnes" data-aller="campagnes">Campagnes et stratégies</a>.</p>' +
+    '<div class="tableau-boite"><table class="auto"><thead><tr><th>Façon de sortir</th><th class="num">Réussite</th><th class="num">Espérance</th><th class="num">Total</th><th class="num">Pire recul</th></tr></thead><tbody>' +
+    lignes.map(function(l){
+      var st = statsRegle(avec, l[1]);
+      var mieux = !l[2] && st.moyenne !== null && stPlan.moyenne !== null && st.moyenne > stPlan.moyenne + 0.05;
+      return '<tr' + (l[2] ? ' class="total"' : '') + '><td>' + l[0] + (mieux ? ' <span class="puce v">mieux</span>' : '') + '</td><td class="num">' + fmtPct(st.tauxReussite) + '</td>' +
+        '<td class="num gras ' + cls(st.moyenne) + '">' + fmtR(st.moyenne) + '</td><td class="num ' + cls(st.total) + '">' + fmtR(st.total, 1) + '</td><td class="num rouge">-' + fmtNombre(st.ddMax, 1) + ' R</td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    '<div class="aide">Les partiels baissent souvent le pire recul au prix d\'une espérance plus faible. C\'est un choix de confort, à faire en connaissance de cause.</div></div>';
 }
 
 /* =======================================================================
@@ -4025,10 +4426,11 @@ async function recevoirFichierImport(f){
     var camp = E.filtre.campagne || E.reglages.campagneActive || (E.campagnes[0] && E.campagnes[0].id) || '';
     var strat = strategieDeCampagne(campagneDe(camp));
     IMPORT = { nom: f.name, lignes: lignes, type: tv ? 'tv' : 'gen', map: devinerColonnes(lignes[0]), campagneId: camp, unR: null,
-               rrDefaut: strat && strat.rrDefaut ? strat.rrDefaut : 3 };
+               rrDefaut: strat && strat.rrDefaut ? strat.rrDefaut : 3, stops: {}, cocher: true };
     if (tv) {
       var essai = lireListeTradesTV(lignes, 0);
-      IMPORT.unR = proposerUnR(essai.pertes) || E.reglages.dernierUnR || null;
+      IMPORT.unRPropose = proposerUnR(essai.pertes);
+      IMPORT.unR = E.reglages.dernierUnR || null;
     }
     rendre();
   } catch (e) { toast('Lecture impossible : ' + ech(e.message || e), 'rougef'); }
@@ -4040,8 +4442,9 @@ function rendreImport(){
   var html =
     '<h1>Importer des trades</h1>' +
     '<div class="grille g2">' +
-      '<div class="avis bleuf petit"><b>Testeur de stratégie TradingView</b> (un script Pine en mode strategy) : onglet <b>Liste des trades</b>, bouton de téléchargement (Export). ' +
-        'Le fichier a deux lignes par trade (Entry / Exit). L\'app les regroupe, et la colonne <b>Run-up</b> devient le MFE, <b>Drawdown</b> le MAE. Il te suffit de dire combien vaut 1 R en dollars.</div>' +
+      '<div class="avis bleuf petit"><b>Replay Trading de TradingView</b> (tu achètes et vends directement dans le Bar Replay, avec tes TP1, TP2, TP3) : panneau <b>Replay Trading</b> en bas, onglet <b>Liste des trades</b>, bouton d\'export. ' +
+        '<b>Exporte avant de fermer le replay</b> : TradingView efface la séance ensuite. Les sorties partielles d\'un même trade sont regroupées toutes seules, le <b>Run-up</b> devient le MFE et le <b>Drawdown</b> le MAE. ' +
+        'Même chose pour la liste des trades du <b>testeur de stratégie</b> d\'un script Pine.</div>' +
       '<div class="avis bleuf petit"><b>Ton propre tableau</b> (Google Sheets, Excel, Notion, un ancien journal de backtest) : enregistre-le en CSV ou en .xlsx. ' +
         'Il faut au moins une date, un sens, et un résultat (en R, ou TP / SL / BE, ou les prix). Tu choisis quelle colonne est quoi.</div>' +
     '</div>' +
@@ -4102,14 +4505,19 @@ function peindreImportJournal(){
 }
 function lireImport(){
   var I = IMPORT;
+  var sym = (campagneDe(I.campagneId) || {}).symbole || '';
   if (I.type === 'tv') {
-    var res = lireListeTradesTV(I.lignes, I.unR || 0);
-    res.trades.forEach(function(t){ t.source = 'tv-strategie'; t.symbole = (campagneDe(I.campagneId) || {}).symbole || ''; });
+    var res = lireListeTradesTV(I.lignes, I.unR || 0, I.stops);
+    res.trades.forEach(function(t){ t.source = 'tv-strategie'; t.symbole = sym; t.importCle = 'tv|' + t.cle; });
     return res;
   }
-  var r2 = lireTableurGenerique(I.lignes, I.map, { rrDefaut: I.rrDefaut, symbole: (campagneDe(I.campagneId) || {}).symbole || '' });
-  r2.trades.forEach(function(t){ t.source = 'import'; });
+  var r2 = lireTableurGenerique(I.lignes, I.map, { rrDefaut: I.rrDefaut, symbole: sym });
+  r2.trades.forEach(function(t){ t.source = 'import'; t.importCle = cleImport(t); });
   return r2;
+}
+function sortiesHtml(t){
+  if (!t.sorties) return '--';
+  return t.sorties.map(function(x){ return '<span class="nowrap">' + prixCourt(x.prix) + (t.sorties.length > 1 ? ' <span class="gris">× ' + fmtNombre(x.qte, 0) + '</span>' : '') + '</span>'; }).join(', ');
 }
 function peindreConfigImport(){
   var I = IMPORT, boite = $('#imConfig');
@@ -4118,14 +4526,23 @@ function peindreConfigImport(){
   var entetes = I.lignes[0];
   var deja = {};
   tradesDeCampagne(I.campagneId).forEach(function(t){ if (t.importCle) deja[t.importCle] = true; });
-  var nouveaux = res.trades.filter(function(t){ return !deja[cleImport(t)]; });
+  var nouveaux = res.trades.filter(function(t){ return !deja[t.importCle]; });
+  var prets = nouveaux.filter(function(t){ return rDuTrade(t) !== null; });
+  var enAttente = nouveaux.length - prets.length;
+  var nbPartiels = res.trades.filter(function(t){ return t.sorties && t.sorties.length > 1; }).length;
+  var strat = strategieDeCampagne(campagneDe(I.campagneId));
+  var obligatoires = ((strat && strat.confluences) || []).filter(function(x){ return x.obligatoire; });
   var html = '<div class="carte mt12"><div class="ligne ecart"><h3 class="mb0">' + ech(I.nom) + '</h3><button class="pt fantome" id="imAnnuler">&#10005; Annuler</button></div>' +
-    '<p class="petit gris mt8">' + (I.type === 'tv' ? 'Reconnu : <b>liste des trades du testeur de stratégie TradingView</b>.' : 'Tableau quelconque : vérifie quelle colonne correspond à quoi.') +
-    ' ' + pluriel(I.lignes.length - 1, 'ligne') + '.</p>' +
+    '<p class="petit gris mt8">' + (I.type === 'tv'
+      ? 'Reconnu : <b>liste des trades de TradingView</b> (Replay Trading ou testeur de stratégie). ' + pluriel(res.trades.length, 'trade') +
+        (nbPartiels ? ', dont <b>' + nbPartiels + ' avec des sorties partielles</b> regroupées (TP1, TP2, TP3...)' : '') + '.'
+      : 'Tableau quelconque : vérifie quelle colonne correspond à quoi. ' + pluriel(I.lignes.length - 1, 'ligne') + '.') + '</p>' +
     '<div class="ligne" style="margin-bottom:10px"><span class="petit">Ranger dans la campagne</span>' + selectCampagnes('imCamp', I.campagneId) + '</div>';
   if (I.type === 'tv') {
-    html += '<div class="grille g3"><label class="champ"><span>1 R = combien de dollars ?</span><input id="imUnR" inputmode="decimal" value="' + (I.unR ? String(I.unR).replace('.', ',') : '') + '">' +
-      '<small>Le risque de chaque trade du script. Proposé : la perte médiane du fichier' + (I.unR ? ' (' + fmtArgent(I.unR, 2) + ')' : '') + '. Si ton script risque un montant fixe, écris-le.</small></label></div>';
+    html += '<div class="avis bleuf petit"><b>Le fichier ne contient pas ton stop.</b> Pour avoir le R exact, écris le prix du stop de chaque trade dans la colonne Stop (le plus juste). ' +
+      'Si tu risques toujours le même montant, tu peux plutôt dire combien vaut 1 R en dollars : il sert pour tous les trades sans stop.</div>' +
+      '<div class="ligne" style="margin-bottom:10px"><label class="champ mb0" style="width:200px"><span>1 R = combien de dollars ?</span><input id="imUnR" inputmode="decimal" value="' + (I.unR ? String(I.unR).replace('.', ',') : '') + '" placeholder="facultatif"></label>' +
+      (I.unRPropose && !I.unR ? '<button class="pt" id="imUnRPropose">Prendre la perte médiane du fichier (' + fmtArgent(I.unRPropose, 2) + ')</button>' : '') + '</div>';
   } else {
     html += '<div class="grille g3">' + CHAMPS_IMPORT.map(function(c){
       return '<label class="champ"><span>' + c[1] + (c[2] ? ' *' : '') + '</span><select data-champ="' + c[0] + '"><option value="-1">(aucune)</option>' +
@@ -4134,50 +4551,87 @@ function peindreConfigImport(){
     '<label class="champ"><span>R:R visé si la colonne dit « TP »</span><input id="imRR" inputmode="decimal" value="' + String(I.rrDefaut || '').replace('.', ',') + '"></label></div>';
   }
   if (res.erreur) html += '<div class="avis rougef">' + ech(res.erreur) + '</div>';
-  html += '<div class="avis ' + (nouveaux.length ? 'vertf' : 'jaunef') + '"><b>' + pluriel(nouveaux.length, 'trade prêt', 'trades prêts') + ' à importer</b>' +
+  html += '<div class="avis ' + (prets.length ? 'vertf' : 'jaunef') + '"><b>' + pluriel(prets.length, 'trade prêt', 'trades prêts') + ' à importer</b>' +
+    (enAttente ? ', <b>' + pluriel(enAttente, 'trade attend', 'trades attendent') + ' son stop ou 1 R</b>' : '') +
     (res.trades.length - nouveaux.length ? ', ' + (res.trades.length - nouveaux.length) + ' déjà importé(s) dans cette campagne' : '') +
     (res.ignores.length ? ', ' + pluriel(res.ignores.length, 'ligne écartée', 'lignes écartées') + ' (' + ech(res.ignores.slice(0, 3).map(function(x){ return 'ligne ' + x.ligne + ' : ' + x.raison; }).join(' ; ')) + (res.ignores.length > 3 ? '...' : '') + ')' : '') + '.</div>';
-  if (I.type === 'tv' && !I.unR) html += '<div class="avis jaunef">Écris combien vaut 1 R pour que les résultats soient en R.</div>';
   if (res.trades.length) {
-    html += '<div class="tableau-boite"><table><thead><tr><th>Date</th><th>Heure</th><th>Sens</th>' + (I.type === 'tv' ? '<th class="num">Profit</th>' : '') +
+    var tous = I.type === 'tv';
+    html += '<div class="tableau-boite" style="max-height:520px;overflow-y:auto"><table><thead><tr><th>Date</th><th>Heure</th><th>Sens</th>' +
+      (tous ? '<th class="num">Entrée</th><th>Sorties</th><th class="num">Profit</th><th>Stop</th>' : '') +
       '<th class="num">Résultat</th><th class="num">MFE</th><th class="num">MAE</th></tr></thead><tbody>' +
-      res.trades.slice(0, 12).map(function(t){
-        var r = rDuTrade(t);
-        return '<tr><td>' + fmtJour(t.date) + '</td><td>' + (t.heure || '--') + '</td><td>' + libelleSens(t.sens) + (t.sensDevine ? ' <span class="puce j">deviné</span>' : '') + '</td>' +
-          (I.type === 'tv' ? '<td class="num ' + cls(t.profit) + '">' + fmtArgent(t.profit, 2) + '</td>' : '') +
-          '<td class="num gras ' + cls(r) + '">' + fmtR(r) + '</td><td class="num">' + (estNombre(t.mfe) ? fmtR(t.mfe) : '--') + '</td><td class="num">' + (estNombre(t.mae) ? fmtNombre(t.mae, 2) : '--') + '</td></tr>';
-      }).join('') + (res.trades.length > 12 ? '<tr><td colspan="7" class="gris petit">... et ' + (res.trades.length - 12) + ' autres</td></tr>' : '') + '</tbody></table></div>';
+      (tous ? res.trades : res.trades.slice(0, 12)).map(function(t){
+        var r = rDuTrade(t), dejaLa = !!deja[t.importCle];
+        return '<tr' + (dejaLa ? ' class="faible"' : '') + '><td>' + fmtJour(t.date) + '</td><td>' + (t.heure || '--') + '</td><td>' + libelleSens(t.sens) + (t.sensDevine ? ' <span class="puce j">deviné</span>' : '') + '</td>' +
+          (tous ? '<td class="num">' + prixCourt(t.entree) + '</td><td class="petit">' + sortiesHtml(t) + '</td>' +
+            '<td class="num ' + cls(t.profit) + '">' + fmtArgent(t.profit, 2) + '</td>' +
+            '<td>' + (dejaLa ? '<span class="petit gris">déjà importé</span>' : '<input class="im-stop" data-cle="' + ech(t.cle) + '" inputmode="decimal" style="width:100px;padding:4px 6px" placeholder="prix du stop" value="' + (estNombre((I.stops || {})[t.cle]) ? String(I.stops[t.cle]).replace('.', ',') : '') + '">') + '</td>' : '') +
+          '<td class="num gras ' + cls(r) + '">' + (r === null ? '<span class="jaune petit">stop ?</span>' : fmtR(r)) +
+            (t.partiels && t.partiels.length ? '<div class="mini gris">' + t.partiels.map(function(x){ return fmtR(x.r, 1) + ' (' + fmtNombre(x.pct, 0) + ' %)'; }).join(' + ') + '</div>' : '') + '</td>' +
+          '<td class="num">' + (estNombre(t.mfe) ? fmtR(t.mfe) : '--') + '</td><td class="num">' + (estNombre(t.mae) ? fmtNombre(t.mae, 2) : '--') + '</td></tr>';
+      }).join('') + (!tous && res.trades.length > 12 ? '<tr><td colspan="7" class="gris petit">... et ' + (res.trades.length - 12) + ' autres</td></tr>' : '') + '</tbody></table></div>';
   }
-  html += '<div class="ligne mt12"><button class="primaire" id="imOk"' + (nouveaux.length && !(I.type === 'tv' && !I.unR) ? '' : ' disabled') + '>Importer ' + pluriel(nouveaux.length, 'trade') + '</button>' +
-    '<span class="petit gris">Les jours de ces trades compteront comme testés. Les jours testés sans trade, eux, ne sont pas dans le fichier : la fréquence sera un peu surestimée.</span></div></div>';
+  if (obligatoires.length) {
+    html += '<label class="pilule-interrupteur mt12" style="white-space:normal"><input type="checkbox" id="imCocher"' + (I.cocher !== false ? ' checked' : '') + '> ' +
+      'Je n\'ai pris que des setups valides : cocher les ' + obligatoires.length + ' étapes obligatoires sur ces trades (tu pourras décocher trade par trade)</label>';
+  }
+  html += '<div class="ligne mt12"><button class="primaire" id="imOk"' + (prets.length ? '' : ' disabled') + '>Importer ' + pluriel(prets.length, 'trade') + '</button>' +
+    '<span class="petit gris">Ensuite, ouvre chaque trade pour la qualité du setup, le biais et la capture (écran Trades, filtre « À compléter »).' +
+    ' Les jours de ces trades comptent comme testés ; les jours sans trade, eux, ne sont pas dans le fichier.</span></div></div>';
   boite.innerHTML = html;
   $('#imAnnuler').onclick = function(){ IMPORT = null; rendre(); };
   $('#imCamp').onchange = function(){ I.campagneId = this.value; peindreConfigImport(); };
   if ($('#imUnR')) $('#imUnR').onchange = function(){ var v = versNombre(this.value); I.unR = v && v > 0 ? v : null; peindreConfigImport(); };
+  if ($('#imUnRPropose')) $('#imUnRPropose').onclick = function(){ I.unR = I.unRPropose; peindreConfigImport(); };
   if ($('#imRR')) $('#imRR').onchange = function(){ var v = versNombre(this.value); I.rrDefaut = v && v > 0 ? v : null; peindreConfigImport(); };
+  if ($('#imCocher')) $('#imCocher').onchange = function(){ I.cocher = this.checked; };
+  $$('.im-stop', boite).forEach(function(inp){
+    inp.onchange = function(){
+      var v = versNombre(this.value);
+      I.stops = I.stops || {};
+      if (v === null) delete I.stops[inp.dataset.cle]; else I.stops[inp.dataset.cle] = v;
+      var y = window.scrollY;
+      peindreConfigImport();
+      window.scrollTo(0, y);
+      // on passe tout seul a la case du trade suivant
+      var cases = $$('.im-stop', $('#imConfig'));
+      var i = cases.findIndex(function(c){ return c.dataset.cle === inp.dataset.cle; });
+      if (i >= 0 && cases[i + 1]) cases[i + 1].focus();
+    };
+    inp.onkeydown = function(e){ if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } };
+  });
   $$('[data-champ]', boite).forEach(function(s){ s.onchange = function(){ I.map[s.dataset.champ] = +s.value; peindreConfigImport(); }; });
   $('#imOk').onclick = async function(){
     var res2 = lireImport();
     var deja2 = {};
     tradesDeCampagne(I.campagneId).forEach(function(t){ if (t.importCle) deja2[t.importCle] = true; });
+    var st2 = strategieDeCampagne(campagneDe(I.campagneId));
+    var confl = {};
+    if (I.cocher !== false) ((st2 && st2.confluences) || []).forEach(function(x){ if (x.obligatoire) confl[x.id] = true; });
     var maintenant = Date.now();
-    var liste = res2.trades.filter(function(t){ return !deja2[cleImport(t)]; }).map(function(t, i){
+    var liste = res2.trades.filter(function(t){ return !deja2[t.importCle] && rDuTrade(t) !== null; }).map(function(t, i){
+      var partiels = t.issue === 'partiels' && t.partiels ? t.partiels : null;
+      var hautTP = partiels ? Math.max.apply(null, partiels.map(function(x){ return x.r; })) : null;
       return {
         id: 't-' + uid() + i, campagneId: I.campagneId, date: t.date, heure: t.heure || '', sens: t.sens,
-        issue: t.issue, r: t.issue === 'autre' ? t.r : rDuTrade(t), rrCible: t.rrCible || null, mfe: estNombre(t.mfe) ? t.mfe : null, mae: estNombre(t.mae) ? t.mae : null,
+        issue: partiels ? 'partiels' : t.issue, r: partiels ? null : (t.issue === 'autre' ? t.r : rDuTrade(t)),
+        partiels: partiels, resteR: null,
+        rrCible: t.rrCible || (hautTP > 0 ? hautTP : null), mfe: estNombre(t.mfe) ? t.mfe : null, mae: estNombre(t.mae) ? t.mae : null,
         entree: estNombre(t.entree) ? t.entree : null, stop: estNombre(t.stop) ? t.stop : null, cible: null, sortie: estNombre(t.sortie) ? t.sortie : null,
-        duree: estNombre(t.duree) ? t.duree : null, symbole: t.symbole || '', confl: {}, qualite: t.qualite || '', biais: '', tags: t.tags || [], notes: t.notes || '',
+        duree: estNombre(t.duree) ? t.duree : null, qte: estNombre(t.qte) ? t.qte : null, symbole: t.symbole || '', confl: JSON.parse(JSON.stringify(confl)),
+        qualite: t.qualite || '', biais: '', tags: t.tags || [], notes: t.notes || '',
         liens: [], douteux: false, nbImages: 0, source: t.source, numTV: t.numTV || null, profit: estNombre(t.profit) ? t.profit : null,
-        importCle: cleImport(t), cree: maintenant + i
+        importCle: t.importCle, cree: maintenant + i
       };
     });
     await dbMettreLot('trades', liste);
     E.trades = E.trades.concat(liste);
     if (I.type === 'tv' && I.unR) { E.reglages.dernierUnR = I.unR; await sauverReglages(); }
-    IMPORT = null;
-    toast(pluriel(liste.length, 'trade importé', 'trades importés') + '.', 'vertf');
+    var reste = res2.trades.filter(function(t){ return !deja2[t.importCle] && rDuTrade(t) === null; }).length;
+    if (!reste) IMPORT = null;
+    toast(pluriel(liste.length, 'trade importé', 'trades importés') + (reste ? ', ' + pluriel(reste, 'trade attend', 'trades attendent') + ' encore son stop' : '') + '.', 'vertf');
     E.filtre.campagne = I.campagneId;
-    allerA('bord');
+    if (reste) rendre(); else allerA('bord');
   };
 }
 
@@ -4331,12 +4785,14 @@ function exporterCsv(trades){
   var n = function(v){ return estNombre(v) ? String(v).replace('.', ',') : ''; };
   var q = function(v){ var s = String(v == null ? '' : v); return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   var entete = ['campagne', 'date', 'heure', 'jour', 'seance', 'sens', 'resultat', 'r', 'rr_vise', 'mfe', 'mae', 'qualite', 'dans_le_plan', 'douteux', 'biais',
-                'etapes', 'etiquettes', 'entree', 'stop', 'cible', 'sortie', 'duree_min', 'symbole', 'notes', 'liens'];
+                'etapes', 'etiquettes', 'entree', 'stop', 'cible', 'sortie', 'duree_min', 'symbole', 'sorties_partielles', 'notes', 'liens'];
   var lignes = trierChrono(trades).map(function(t){
     return [nomCampagne(t.campagneId), t.date, t.heure || '', JOURS_FR[jourSemaine(t.date)], seanceDuTrade(t), t.sens, (t.issue || '').toUpperCase(), n(rDuTrade(t)), n(t.rrCible),
             n(t.mfe), n(t.mae), t.qualite || '', conforme(t) ? 'oui' : 'non', t.douteux ? 'oui' : 'non', t.biais || '',
             Object.keys(t.confl || {}).filter(function(k){ return t.confl[k]; }).map(function(k){ return cf[k] || k; }).join(' + '),
-            (t.tags || []).join(', '), n(t.entree), n(t.stop), n(t.cible), n(t.sortie), n(t.duree), t.symbole || '', t.notes || '', (t.liens || []).join(' ')].map(q).join(';');
+            (t.tags || []).join(', '), n(t.entree), n(t.stop), n(t.cible), n(t.sortie), n(t.duree), t.symbole || '',
+            t.partiels ? t.partiels.map(function(x){ return n(x.r) + ' R ' + n(x.pct) + ' %' + (x.touche ? '' : ' rate'); }).join(' | ') + (estNombre(t.resteR) ? ' | reste ' + n(t.resteR) + ' R' : '') : '',
+            t.notes || '', (t.liens || []).join(' ')].map(q).join(';');
   });
   var nom = 'trades-backtest-' + horodatageFichier() + '.csv';
   telecharger(nom, '﻿' + entete.join(';') + '\r\n' + lignes.join('\r\n'), 'text/csv;charset=utf-8');
@@ -4485,6 +4941,9 @@ function autotestHtml(){
   var tv = lireListeTradesTV(parserCSV('Trade #,Type,Signal,Date/Time,Price USD,Contracts,Profit USD,Run-up USD,Drawdown USD\n1,Exit long,TP,2025-03-12 10:05,20100,1,500,600,-100\n1,Entry long,Long,2025-03-12 09:41,20000,1,500,600,-100'), 250);
   v('TradingView : R du trade', tv.trades[0].r, 2);
   v('TradingView : MFE', tv.trades[0].mfe, 2.4);
+  v('TP1 et TP2 touchés, reste au BE', rDesPartiels([{ r: 1, pct: 50, touche: true }, { r: 2, pct: 25, touche: true }, { r: 3, pct: 25, touche: false }], 0), 1);
+  var tvp = lireListeTradesTV(parserCSV('Trade #,Type,Date/Time,Signal,Price USD,Contracts,Profit USD\n2,Exit long,2025-03-12 10:12,TP2,20040,1,80\n2,Entry long,2025-03-12 09:41,Long,20000,1,80\n1,Exit long,2025-03-12 09:55,TP1,20020,1,40\n1,Entry long,2025-03-12 09:41,Long,20000,1,40'), 0, { '2025-03-12 09:41|long|20000': 19980 });
+  v('TradingView : 2 sorties regroupées en un trade de +1,5 R', tvp.trades.length + ':' + tvp.trades[0].r, '1:1.5');
   var ok = res.filter(function(x){ return x.ok; }).length;
   return '<div class="avis ' + (ok === res.length ? 'vertf' : 'rougef') + '"><b>' + ok + ' / ' + res.length + ' vérifications réussies.</b></div>' +
     '<div class="tableau-boite"><table class="auto"><tbody>' + res.map(function(x){

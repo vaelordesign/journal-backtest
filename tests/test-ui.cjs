@@ -145,6 +145,11 @@ function verif(nom, cond, detail) {
               liens: [], douteux: rng() < 0.06, nbImages: 0, source: 'test', cree: Date.now() + trades.length });
             var t = trades[trades.length - 1];
             if (t.entree !== null) { t.stop = sens === 'long' ? t.entree - dist : t.entree + dist; }
+            if (rng() < 0.3) {
+              t.issue = 'partiels'; t.r = null;
+              t.partiels = [{ r: 1, pct: 50, touche: t.mfe >= 1 }, { r: 2, pct: 25, touche: t.mfe >= 2 }, { r: 3, pct: 25, touche: t.mfe >= 3 }];
+              t.resteR = t.partiels[0].touche ? 0 : -1;
+            }
           }
         }
         d = ajouterJours(d, 1);
@@ -214,7 +219,9 @@ function verif(nom, cond, detail) {
       '2,Exit short,2025-04-02 11:15,SL,20060,1,-250,-1.2,150,-250\\n2,Entry short,2025-04-02 10:50,Short,20010,1,-250,-1.2,150,-250\\n' +
       '1,Exit long,2025-04-01 10:05,TP,20100,1,750,3.7,900,-50\\n1,Entry long,2025-04-01 09:41,Long,19950,1,750,3.7,900,-50';
     await c.ev('allerA("import"); await recevoirFichierImport(new File(["' + csv + '"], "liste-trades.csv", { type: "text/csv" })); await new Promise(r => setTimeout(r, 300));');
-    verif('fichier reconnu, 1 R propose = 250', await c.ev('return IMPORT && IMPORT.type === "tv" && IMPORT.unR === 250'));
+    verif('fichier reconnu, 1 R propose = 250 (pas rempli d\'office)', await c.ev('return IMPORT && IMPORT.type === "tv" && IMPORT.unRPropose === 250 && !IMPORT.unR'));
+    verif('sans stop ni 1 R : rien a importer', await c.ev('return document.querySelector("#imOk").disabled && document.querySelectorAll(".im-stop").length === 2'));
+    await c.ev('document.querySelector("#imUnRPropose").click(); await new Promise(r => setTimeout(r, 300));');
     const avantImp = await c.ev('return E.trades.length');
     await c.ev('document.querySelector("#imOk").click(); await new Promise(r => setTimeout(r, 500));');
     verif('2 trades importes en R', await c.ev('return E.trades.length === ' + (avantImp + 2) + ' && E.trades.some(t => t.source === "tv-strategie" && t.r === 3 && t.mfe === 3.6)'));
@@ -333,7 +340,84 @@ function verif(nom, cond, detail) {
     await c.capture(path.join(SHOTS, 'tel-fiche.png'));
     await c.taille(0);
 
-    console.log('\n15. Test dans la page (Reglages)');
+    console.log('\n15. TP1 TP2 TP3 dans la fiche du trade');
+    await c.taille(0);
+    await c.aller('about:blank');
+    await c.aller(URL_APP + '#seance');
+    await c.ev('document.querySelector("#seNouveau").click(); await new Promise(r => setTimeout(r, 300));');
+    await c.ev(`
+      var m = document.querySelector('#modale');
+      var h = m.querySelector('#ftHeure'); h.value = '10:02'; h.dispatchEvent(new Event('input'));
+      m.querySelector('#ftSens button[data-v="long"]').click();
+      m.querySelector('#ftIssue button[data-v="partiels"]').click();
+    `);
+    verif('le bloc des TP s\'ouvre avec le plan de la strategie', await c.ev('return document.querySelector("#ftPartBoite").style.display === "" && document.querySelectorAll("#ftPartLignes .part-ligne").length === 3'));
+    verif('rien touche : tout au stop', (await c.ev('return document.querySelector("#ftApercu").textContent')) === '-1\u00a0R');
+    await c.ev('document.querySelectorAll("#ftPartLignes .part-ligne")[1].querySelector("[data-t=\'1\']").click(); await new Promise(r => setTimeout(r, 100));');
+    verif('toucher TP2 touche aussi TP1', await c.ev('var l = document.querySelectorAll("#ftPartLignes .part-ligne"); return l[0].querySelector("[data-t=\'1\']").classList.contains("on") && l[1].querySelector("[data-t=\'1\']").classList.contains("on") && l[2].querySelector("[data-t=\'0\']").classList.contains("on")'));
+    verif('reste passe au BE tout seul (plan : BE apres TP1)', await c.ev('return document.querySelector("#ftReste").dataset.v === "0"'));
+    verif('apercu : 0,5 + 0,5 + 0 = +1 R', (await c.ev('return document.querySelector("#ftApercu").textContent')) === '+1\u00a0R', await c.ev('return document.querySelector("#ftApercu").textContent'));
+    await c.ev('document.querySelector("#ftReste button[data-v=\'-1\']").click(); await new Promise(r => setTimeout(r, 100));');
+    verif('reste au stop : +0,75 R', (await c.ev('return document.querySelector("#ftApercu").textContent')) === '+0,75\u00a0R');
+    await c.ev('document.querySelector("#ftReste button[data-v=\'0\']").click(); var p = document.querySelectorAll("#ftPartLignes .part-ligne")[2].querySelector("input[data-c=pct]"); p.value = "15"; p.dispatchEvent(new Event("input")); await new Promise(r => setTimeout(r, 100));');
+    verif('parts a 90 % : signale', (await c.ev('return document.querySelector("#ftPartSomme").textContent')).indexOf('il faut 100') >= 0);
+    await c.ev('document.querySelector("#ftEnregistrer").click(); await new Promise(r => setTimeout(r, 300));');
+    verif('refus tant que les parts ne font pas 100 %', await c.ev('return !!document.querySelector("#ftEnregistrer")'));
+    await c.ev('var p = document.querySelectorAll("#ftPartLignes .part-ligne")[2].querySelector("input[data-c=pct]"); p.value = "25"; p.dispatchEvent(new Event("input")); var mf = document.querySelector("#ftMfe"); mf.value = "2,6"; mf.dispatchEvent(new Event("input"));');
+    await c.capture(path.join(SHOTS, 'fiche-partiels.png'), true);
+    const nAvant = await c.ev('return E.trades.length');
+    await c.ev('document.querySelector("#ftEnregistrer").click(); await new Promise(r => setTimeout(r, 500));');
+    const tp = await c.ev('var t = E.trades[E.trades.length - 1]; return { n: E.trades.length, issue: t.issue, r: rDuTrade(t), reste: t.resteR, parts: t.partiels.map(x => x.touche), rr: t.rrCible, resume: resumePartiels(t) };');
+    verif('trade a partiels enregistre (+1 R, reste au BE)', tp.n === nAvant + 1 && tp.issue === 'partiels' && tp.r === 1 && tp.reste === 0 && JSON.stringify(tp.parts) === '[true,true,false]' && tp.rr === 3, tp);
+    verif('resume dans les listes', tp.resume === 'TP1 \u2713 \u00b7 TP2 \u2713 \u00b7 TP3 \u2717', tp.resume);
+    await c.ev('formulaireTrade(E.trades[E.trades.length - 1].id); await new Promise(r => setTimeout(r, 400));');
+    verif('a la reouverture, les TP et le reste sont la', await c.ev('return document.querySelector("#ftIssue").dataset.v === "partiels" && document.querySelector("#ftPartBoite").style.display === "" && document.querySelector("#ftReste").dataset.v === "0" && document.querySelector("#ftApercu").textContent === "+1\u00a0R"'));
+    await c.ev('fermerModale();');
+
+    console.log('\n16. Plan de sorties dans la strategie');
+    await c.ev('formulaireStrategie(campagneActive().strategieId); await new Promise(r => setTimeout(r, 300));');
+    verif('plan propose (3 TP)', await c.ev('return document.querySelectorAll("#fsPlan .part-ligne").length === 3'));
+    await c.ev('var l = document.querySelectorAll("#fsPlan .part-ligne"); var i = l[0].querySelector("input[data-c=pct]"); i.value = "40"; i.dispatchEvent(new Event("input")); document.querySelector("#fsOk").click(); await new Promise(r => setTimeout(r, 300));');
+    verif('refus si le plan ne fait pas 100 %', await c.ev('return !!document.querySelector("#fsOk")'));
+    await c.ev('var l = document.querySelectorAll("#fsPlan .part-ligne"); var i = l[2].querySelector("input[data-c=pct]"); i.value = "35"; i.dispatchEvent(new Event("input")); var r2 = l[2].querySelector("input[data-c=r]"); r2.value = "4"; r2.dispatchEvent(new Event("input")); document.querySelector("#fsBE").checked = false; document.querySelector("#fsOk").click(); await new Promise(r => setTimeout(r, 400));');
+    verif('plan enregistre : 40 / 25 / 35 %, TP3 a 4 R, sans BE', await c.ev('var p = strategieDe(campagneActive().strategieId).planSorties; return JSON.stringify(p.niveaux.map(x => [x.r, x.pct])) === "[[1,40],[2,25],[4,35]]" && p.beApresTp1 === false'));
+    await c.ev('document.querySelector("#seNouveau").click(); await new Promise(r => setTimeout(r, 300)); document.querySelector("#ftIssue button[data-v=partiels]").click(); await new Promise(r => setTimeout(r, 100));');
+    verif('un nouveau trade reprend le nouveau plan', await c.ev('var l = document.querySelectorAll("#ftPartLignes .part-ligne input[data-c=pct]"); return l.length === 3 && l[0].value === "40" && l[2].value === "35"'));
+    await c.ev('fermerModale();');
+
+    console.log('\n17. Import d\'une seance Replay Trading avec sorties partielles');
+    const csvP = 'Trade #,Type,Date/Time,Signal,Price USD,Position size (qty),Net P&L USD,Run-up USD,Drawdown USD\\n' +
+      '4,Exit short,2025-06-03 10:20,SL,20110,1,-20,0,-20\\n4,Entry short,2025-06-03 10:00,Short,20100,1,-20,0,-20\\n' +
+      '3,Exit long,2025-06-02 10:30,Close,20000,1,0,100,-20\\n3,Entry long,2025-06-02 09:41,Long,20000,1,0,100,-20\\n' +
+      '2,Exit long,2025-06-02 10:12,TP2,20040,1,80,80,-20\\n2,Entry long,2025-06-02 09:41,Long,20000,1,80,80,-20\\n' +
+      '1,Exit long,2025-06-02 09:55,TP1,20020,2,80,80,-40\\n1,Entry long,2025-06-02 09:41,Long,20000,2,80,80,-40';
+    await c.ev('E.reglages.dernierUnR = null; allerA("import"); await recevoirFichierImport(new File(["' + csvP + '"], "replay.csv")); await new Promise(r => setTimeout(r, 300));');
+    verif('2 trades reconnus, dont 1 avec sorties partielles', (await c.ev('return document.querySelector("#imConfig").textContent')).indexOf('dont 1 avec des sorties partielles') >= 0);
+    verif('une case Stop par trade', await c.ev('return document.querySelectorAll(".im-stop").length === 2'));
+    await c.ev('var i = document.querySelectorAll(".im-stop")[0]; i.value = "19980"; i.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
+    verif('apres le stop du 1er trade : +1 R et le curseur passe au suivant', await c.ev('return document.activeElement && document.activeElement.classList.contains("im-stop") && document.querySelector("#imConfig").textContent.indexOf("+1\u00a0R (50 %)") >= 0'));
+    await c.ev('var i = document.querySelectorAll(".im-stop")[1]; i.value = "20110"; i.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
+    await c.capture(path.join(SHOTS, 'import-replay.png'), true);
+    await c.ev('document.querySelector("#imOk").click(); await new Promise(r => setTimeout(r, 500));');
+    const imp = await c.ev('var a = E.trades.filter(t => t.date === "2025-06-02" && t.source === "tv-strategie")[0], b = E.trades.filter(t => t.date === "2025-06-03" && t.source === "tv-strategie")[0]; return { a: a && [a.issue, rDuTrade(a), a.mfe, a.mae, a.partiels.length, a.stop, conforme(a), libelleIssue(a)], b: b && [b.issue, rDuTrade(b)] };');
+    verif('trade a 3 sorties importe : +1 R, MFE 2,5, MAE 0,5, stop garde, dans le plan', JSON.stringify(imp.a) === JSON.stringify(['partiels', 1, 2.5, 0.5, 3, 19980, true, '3 sorties']), imp);
+    verif('trade simple importe : -1 R', JSON.stringify(imp.b) === JSON.stringify(['autre', -1]), imp);
+    await c.ev('allerA("trades"); var s = document.querySelector("#liRes"); s.value = "acompleter"; s.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
+    verif('filtre « A completer » : les trades importes sans qualite', await c.ev('return tradesListe().length > 0 && tradesListe().every(t => !t.qualite)'));
+    await c.ev('LISTE.resultat = "";');
+
+    console.log('\n18. Analyses et Cible et stop avec des partiels');
+    await c.ev('E.filtre.campagne = ""; allerA("analyses"); await new Promise(r => setTimeout(r, 400));');
+    const anP = await c.ev('return document.querySelector("#ec-analyses").textContent');
+    verif('carte « Tes sorties partielles »', anP.indexOf('Tes sorties partielles') >= 0 && anP.indexOf('Tout sortir à TP3') >= 0);
+    await c.ev('allerA("sorties"); await new Promise(r => setTimeout(r, 400));');
+    const soP = await c.ev('return document.querySelector("#ec-sorties").textContent');
+    verif('carte « Ton plan de sorties partielles, rejoue »', soP.indexOf('Ton plan de sorties partielles, rejoué') >= 0 && soP.indexOf('Tout sortir à TP1') >= 0);
+    await c.capture(path.join(SHOTS, 'sorties-plan.png'), true);
+    const csvTxt = await c.ev('var capt = null; var vrai = telecharger; telecharger = function(n, c){ capt = c; return 0; }; exporterCsv(E.trades); telecharger = vrai; return capt;');
+    verif('export CSV : colonne des sorties partielles', csvTxt.indexOf('sorties_partielles') > 0 && csvTxt.indexOf('1 R 50 %') > 0);
+
+    console.log('\n19. Test dans la page (Reglages)');
     await c.aller(URL_APP + '#reglages');
     await c.ev('document.querySelector("#reTest").click(); await new Promise(r => setTimeout(r, 300));');
     const at = await c.ev('return document.querySelector("#reTestSortie").innerText');

@@ -27,7 +27,8 @@ const M = new Function(code + `
            grouperR, analyseConfluences, frequence, issueSimulee, statsRegle, grilleSorties, atteintes, balayageStop,
            simulerChallenge, balayageRisque, eventailR, parserCSV, detecterOrdreDates, separerDateHeure, sensDepuisTexte,
            issueDepuisTexte, colonnesTV, estListeTradesTV, lireListeTradesTV, proposerUnR, devinerColonnes, lireTableurGenerique,
-           rTradeJournal, depuisJournal };
+           rTradeJournal, depuisJournal, rDesPartiels, planDe, PLAN_DEFAUT, resumePartiels, partielsImportes, analysePartiels,
+           multiplicateurDeduit, calculerTradeTV };
 `)();
 
 let echecs = 0, reussites = 0;
@@ -362,6 +363,80 @@ verifier('R depuis le stop prevu : 160 $ / (20 pts x 2 x 2 $)', M.rTradeJournal(
 verifier('sans stop ni R', M.rTradeJournal({ net: 100 }), null);
 const dj = M.depuisJournal({ cle: 'MNQ#1', ouverture: new Date(2026, 8, 25, 9, 45).getTime(), sens: 'short', rManuel: -1, symbole: 'MNQ' });
 verifier('conversion d\'un trade du journal', [dj.date, dj.heure, dj.sens, dj.r, dj.id], ['2026-09-25', '09:45', 'short', -1, 'reel-MNQ#1']);
+
+/* ------------------------------------------------------------------ */
+titre('14. Sorties partielles TP1 / TP2 / TP3');
+const P3 = [{ r: 1, pct: 50, touche: true }, { r: 2, pct: 25, touche: true }, { r: 3, pct: 25, touche: false }];
+verifier('TP1 et TP2 touches, reste au BE : 0,5 + 0,5 + 0', M.rDesPartiels(P3, 0), 1);
+verifier('meme chose, reste au stop : 0,5 + 0,5 - 0,25', M.rDesPartiels(P3, -1), 0.75);
+verifier('rien touche, tout au stop', M.rDesPartiels(P3.map(x => Object.assign({}, x, { touche: false })), -1), -1);
+verifier('tout touche : 0,5 + 0,5 + 0,75', M.rDesPartiels(P3.map(x => Object.assign({}, x, { touche: true })), 0), 1.75);
+verifier('reste sorti a la main a +1,7 R', M.rDesPartiels([{ r: 1, pct: 50, touche: true }, { r: 3, pct: 50, touche: false }], 1.7), 1.35);
+verifier('parts qui ne font pas 100 % = inconnu', M.rDesPartiels([{ r: 1, pct: 50, touche: true }, { r: 2, pct: 30, touche: true }], 0), null);
+verifier('TP rate sans reste choisi = inconnu', M.rDesPartiels(P3, null), null);
+verifier('rDuTrade d\'un trade a partiels', M.rDuTrade({ issue: 'partiels', partiels: P3, resteR: 0 }), 1);
+verifier('resume des TP', M.resumePartiels({ issue: 'partiels', partiels: P3 }), 'TP1 ✓ · TP2 ✓ · TP3 ✗');
+verifier('plan par defaut si la strategie n\'en a pas', M.planDe({}).niveaux.length, 3);
+// le plan rejoue avec le MFE : 50 % a 1 R, 25 % a 2 R, 25 % a 3 R, BE apres TP1
+const PL = { niveaux: [{ r: 1, pct: 50 }, { r: 2, pct: 25 }, { r: 3, pct: 25 }], beApresTp1: true };
+verifier('plan, MFE 2,4 : 0,5 + 0,5 + 0', M.issueSimulee({ mfe: 2.4 }, { plan: PL }), 1);
+verifier('plan, MFE 0,8 : tout au stop', M.issueSimulee({ mfe: 0.8 }, { plan: PL }), -1);
+verifier('plan, MFE 3,2 : tout pris', M.issueSimulee({ mfe: 3.2 }, { plan: PL }), 1.75);
+verifier('plan sans BE, MFE 1,5 : 0,5 - 0,5', M.issueSimulee({ mfe: 1.5 }, { plan: { niveaux: PL.niveaux, beApresTp1: false } }), 0);
+const AP = M.analysePartiels([
+  { id: 'a', date: '2025-01-02', issue: 'partiels', resteR: 0, partiels: [{ r: 1, pct: 50, touche: true }, { r: 2, pct: 25, touche: true }, { r: 3, pct: 25, touche: false }] },
+  { id: 'b', date: '2025-01-03', issue: 'partiels', resteR: -1, partiels: [{ r: 1, pct: 50, touche: false }, { r: 2, pct: 25, touche: false }, { r: 3, pct: 25, touche: false }] },
+  { id: 'c', date: '2025-01-06', issue: 'partiels', resteR: 0, partiels: [{ r: 1, pct: 50, touche: true }, { r: 2, pct: 25, touche: true }, { r: 3, pct: 25, touche: true }] },
+  { id: 'd', date: '2025-01-07', issue: 'tp', rrCible: 3 }]);
+verifier('analyse : 3 trades a partiels', AP.nb, 3);
+verifier('TP1 touche 2 fois sur 3', [AP.touches[0].nbTouche, AP.touches[0].nb], [2, 3]);
+verifier('TP3 touche 1 fois sur 3', AP.touches[2].nbTouche, 1);
+verifier('ton plan reel : 1 - 1 + 1,75', AP.plan.total, 1.75);
+verifier('tout a TP1 : 1 - 1 + 1', AP.toutA[0].stats.total, 1);
+verifier('tout a TP3 : 0 (BE) - 1 + 3', AP.toutA[2].stats.total, 2);
+
+titre('15. Replay Trading de TradingView : sorties partielles regroupees');
+// Long 4 MNQ a 20 000, stop 19 980 (20 points = 1 R = 160 $). TradingView coupe le trade en 3 lignes :
+// 2 contrats a 20 020 (+1 R, +80 $), 1 a 20 040 (+2 R, +80 $), 1 ramene au point mort (0 $).
+// Le prix est monte a 20 050 (50 points = 2,5 R) et descendu a 19 990 (10 points = 0,5 R).
+const CSV_P =
+`Trade #,Type,Date/Time,Signal,Price USD,Position size (qty),Net P&L USD,Run-up USD,Drawdown USD
+4,Exit short,2025-03-13 10:20,SL,20110,1,-20,0,-20
+4,Entry short,2025-03-13 10:00,Short,20100,1,-20,0,-20
+3,Exit long,2025-03-12 10:30,Close position,20000,1,0,100,-20
+3,Entry long,2025-03-12 09:41,Long,20000,1,0,100,-20
+2,Exit long,2025-03-12 10:12,TP2,20040,1,80,80,-20
+2,Entry long,2025-03-12 09:41,Long,20000,1,80,80,-20
+1,Exit long,2025-03-12 09:55,TP1,20020,2,80,80,-40
+1,Entry long,2025-03-12 09:41,Long,20000,2,80,80,-40`;
+const LP3 = M.parserCSV(CSV_P);
+const cleA = '2025-03-12 09:41|long|20000', cleB = '2025-03-13 10:00|short|20100';
+let rp = M.lireListeTradesTV(LP3, 0, { [cleA]: 19980, [cleB]: 20110 });
+verifier('8 lignes, 4 morceaux, 2 trades', rp.trades.length, 2);
+const A = rp.trades[0], B = rp.trades[1];
+verifier('le trade a 3 sorties, dans l\'ordre du temps', [A.cle, A.sorties.length, A.sorties.map(x => x.prix), A.numTV], [cleA, 3, [20020, 20040, 20000], '1+2+3']);
+verifier('4 contrats, 160 $ de profit', [A.qte, A.profit], [4, 160]);
+verifier('2 $ le point retrouve dans le fichier (MNQ)', A.multiplicateur, 2);
+verifier('avec le stop : sorties a +1, +2 et 0 R', A.partiels.map(x => x.r), [1, 2, 0]);
+verifier('parts de 50, 25 et 25 %', A.partiels.map(x => x.pct), [50, 25, 25]);
+verifier('resultat +1 R, issue partiels', [A.r, A.issue, A.mode], [1, 'partiels', 'stop']);
+verifier('rDuTrade le retrouve depuis les parts', M.rDuTrade({ issue: A.issue, partiels: A.partiels, resteR: null }), 1);
+verifier('MFE 50 / 20 points = 2,5 R', A.mfe, 2.5);
+verifier('MAE 10 / 20 points = 0,5 R', A.mae, 0.5);
+verifier('duree 09:41 -> 10:30', A.duree, 49);
+verifier('le trade a une seule sortie reste simple', [B.issue, B.r, B.partiels, B.mfe, B.mae], ['autre', -1, null, 0, 1]);
+verifier('un trade importe se resume en sorties', M.resumePartiels({ issue: 'partiels', partiels: A.partiels }), '3 sorties');
+rp = M.lireListeTradesTV(LP3, 160);
+verifier('sans stop, 1 R = 160 $ : memes niveaux', [rp.trades[0].partiels.map(x => x.r), rp.trades[0].r, rp.trades[0].mfe], [[1, 2, 0], 1, 2.5]);
+rp = M.lireListeTradesTV(LP3, 200);
+verifier('1 R = 200 $ : 160 / 200', rp.trades[0].r, 0.8);
+rp = M.lireListeTradesTV(LP3, 0, { [cleA]: 20010 });
+verifier('stop du mauvais cote : pas de R', rp.trades[0].r, null);
+rp = M.lireListeTradesTV(LP3, 0);
+verifier('ni stop ni 1 R : pas de R, mais le trade est lu', [rp.trades.length, rp.trades[0].r, rp.trades[0].sorties.length], [2, null, 3]);
+verifier('1 R propose = perte mediane des trades entiers', M.proposerUnR(rp.pertes), 20);
+verifier('multiplicateur ES 50 $ reconnu malgre 1 % de frais', M.multiplicateurDeduit([{ prix: 5010, qte: 1, profit: 495 }], 5000), 50);
+verifier('multiplicateur inconnu sans mouvement', M.multiplicateurDeduit([{ prix: 5000, qte: 1, profit: 0 }], 5000), null);
 
 /* ------------------------------------------------------------------ */
 console.log('\n' + '='.repeat(60));

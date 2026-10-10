@@ -45,7 +45,8 @@ Tu peux tout modifier dans *Campagnes et stratégies*.
    clique **+ Trade** (ou touche **N**).
 3. Remplis la fiche : heure, Long ou Short, les étapes présentes, la qualité (D à A+).
 4. Laisse avancer le replay jusqu'à la sortie, puis choisis le résultat :
-   **TP**, **SL -1**, **BE 0** ou **Autre** (tu écris le R, par exemple 1,5).
+   **TP**, **SL -1**, **BE 0**, **TP1 TP2 TP3** (sorties partielles, voir plus bas)
+   ou **Autre** (tu écris le R, par exemple 1,5).
 5. Note aussi jusqu'où le prix est allé (voir plus bas, MFE et MAE).
 6. Capture : dans TradingView, l'appareil photo en haut à droite, **Copier l'image**
    (Ctrl+Maj+S), puis **Ctrl+V** dans la fiche.
@@ -67,6 +68,30 @@ Raccourcis de l'écran Séance : **N** nouveau trade, **J** jour terminé et sui
 
 Avec ces deux chiffres, l'écran **Cible et stop** rejoue tous tes trades avec d'autres
 cibles, une mise au point mort, un partiel ou un stop plus serré.
+
+### Sorties partielles : TP1, TP2, TP3
+
+Si tu sors une part de ta position à chaque TP, choisis **TP1 TP2 TP3** dans la fiche.
+
+- Ton plan est proposé tout seul : par défaut TP1 à 1 R (50 %), TP2 à 2 R (25 %),
+  TP3 à 3 R (25 %), et le stop monte au point mort une fois TP1 touché.
+  Change-le une fois pour toutes dans **Campagnes et stratégies** (bouton Modifier de la
+  stratégie, partie « Plan de sorties partielles »).
+- Pour chaque TP, clique **Touché** ou **Raté**. Toucher TP2, c'est forcément avoir touché TP1 :
+  l'app coche TP1 toute seule.
+- En dessous, dis où sont sorties les parts qui ont raté leur TP : **Stop -1**, **BE 0**, ou
+  **Autre** (sortie à la main, par exemple 0,5 R).
+- L'app fait le calcul : TP1 et TP2 touchés, TP3 raté, reste au point mort
+  = 0,5 x 1 + 0,25 x 2 + 0,25 x 0 = **+1 R**.
+- Si tu as rempli l'entrée et le stop (partie « Prix »), le prix de chaque TP s'affiche à côté.
+
+Ce que ça t'apprend :
+
+- **Analyses**, carte « Tes sorties partielles » : combien de fois tu touches TP1, TP2, TP3,
+  et ce qu'aurait donné tout sortir à un seul TP.
+- **Cible et stop**, carte « Ton plan de sorties partielles, rejoué » : ton plan appliqué à
+  tous tes trades grâce au MFE, contre la même chose sans BE, ou tout à TP1, TP2, TP3.
+  Les partiels baissent souvent le pire recul mais aussi l'espérance : là, tu le vois en chiffres.
 
 ### La case « Douteux »
 
@@ -127,10 +152,33 @@ Il rejoue des milliers de challenges en tirant au hasard dans **tes** journées 
 
 ## 5. Importer
 
-- **Testeur de stratégie TradingView** (un script Pine en mode strategy) : onglet
-  **Liste des trades**, bouton de téléchargement. Glisse le fichier dans l'écran Import,
-  dis combien vaut 1 R en dollars, c'est tout. Le Run-up devient le MFE, le Drawdown le MAE.
-  Les exports en anglais et en français sont reconnus.
+### Le plus simple : trader dans le Replay Trading de TradingView
+
+Au lieu de remplir une fiche par trade, tu peux passer tes ordres directement dans le
+Bar Replay de TradingView (boutons Acheter / Vendre en haut à gauche, puis tes TP et ton SL
+glissés sur le graphique), et importer la séance d'un coup.
+
+1. Lance le Bar Replay, puis **Replay Trading** dans le panneau du bas.
+2. Trade normalement, avec tes sorties partielles TP1, TP2, TP3.
+3. À la fin de la séance, **avant de fermer le replay** (TradingView efface tout ensuite) :
+   panneau Replay Trading, onglet **Liste des trades**, bouton d'export.
+4. Glisse le fichier dans l'écran **Import** de l'app.
+5. Le fichier ne contient pas ton stop : écris le **prix du stop** de chaque trade dans la
+   colonne Stop (Entrée passe au trade suivant). C'est ce qui donne le R exact.
+   Si tu risques toujours le même montant, tu peux plutôt écrire combien vaut 1 R en dollars.
+6. **Importer.** Les sorties partielles d'un même trade sont regroupées en un seul trade
+   (« 3 sorties »), le Run-up devient le MFE et le Drawdown le MAE.
+7. Les étapes obligatoires sont cochées si tu laisses la case « Je n'ai pris que des setups
+   valides ». Il te reste la qualité, le biais et la capture : écran **Trades**, filtre
+   « À compléter ».
+
+Les jours sans trade ne sont pas dans le fichier : pense à les marquer dans la séance
+(bouton Jour terminé), sinon la fréquence sera surestimée.
+
+### Les autres imports
+
+- **Testeur de stratégie TradingView** (un script Pine en mode strategy) : même onglet
+  **Liste des trades**, même import. Les exports en anglais et en français sont reconnus.
 - **Ton propre tableau** (Google Sheets, Excel, Notion) : enregistre-le en CSV ou en .xlsx,
   glisse-le, et choisis quelle colonne est la date, le sens, le résultat...
   Il faut une date, un sens, et un résultat (en R, ou TP / SL / BE, ou les prix).
@@ -161,7 +209,7 @@ envoyées. Le lien ne marche pour quelqu'un d'autre que si l'app est en ligne.
 ## 8. Vérifier les calculs
 
 - Dans l'app : **Réglages**, bouton **Lancer le test**.
-- Le test complet (197 vérifications, chaque résultat calculé à la main) :
+- Le test complet (237 vérifications, chaque résultat calculé à la main) :
 
 ```
 node verifier-moteur.cjs
