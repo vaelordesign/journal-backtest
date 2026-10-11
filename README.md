@@ -43,5 +43,5 @@ node verifier-moteur.cjs
 
 261 vérifications du moteur de calcul, rejouées sur le code livré dans `index.html`.
 
-Test de bout en bout dans un vrai Chrome (137 vérifications, ordinateur et téléphone) :
+Test de bout en bout dans un vrai Chrome (142 vérifications, ordinateur et téléphone) :
 servir le dossier `Typing` sur le port 8772, puis `node tests/test-ui.cjs`.

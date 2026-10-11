@@ -2334,7 +2334,7 @@ function rendreSeance(){
   var horsPeriode = (dateValide(c.debut) && jour < c.debut) || (dateValide(c.fin) && jour > c.fin);
   var statut;
   if (tj.length) statut = '<span class="puce a">testé · ' + pluriel(tj.length, 'trade') + '</span>';
-  else if (jr && jr.teste) statut = '<span class="puce">testé · aucun setup</span>';
+  else if (jr && jr.teste) statut = '<span class="puce">testé · aucun setup</span> <button class="pt fantome" id="seDemarquer" title="Ce jour ne compte plus comme testé">annuler</button>';
   else statut = '<span class="puce j">pas encore testé</span>';
   var rJour = tj.reduce(function(a, t){ var r = rDuTrade(t); return a + (r === null ? 0 : r); }, 0);
   var dureeSeance = Math.round((Date.now() - E.seance.debut) / 60000);
@@ -2425,6 +2425,11 @@ function rendreSeance(){
   $('#seDate').onchange = function(){ if (dateValide(this.value)) changerJour(c, this.value); };
   $('#seNouveau').onclick = function(){ formulaireTrade(null, { campagneId: c.id, date: jour }); };
   $('#seTermine').onclick = function(){ terminerJour(c); };
+  if ($('#seDemarquer')) $('#seDemarquer').onclick = async function(){
+    await ecrireJour(c.id, jour, { teste: false });
+    toast('Le ' + fmtJourCourt(jour) + ' ne compte plus comme jour testé.', 'jaunef');
+    rendre();
+  };
   var minuteur = null;
   $('#seNoteJour').oninput = function(){
     var v = this.value;
@@ -3160,7 +3165,7 @@ async function formulaireCampagne(id, modele){
     if (!dateValide(v.debut) || !dateValide(v.fin) || v.fin < v.debut) { toast('Vérifie les dates : le dernier jour doit venir après le premier.', 'rougef'); return; }
     if (c) {
       Object.assign(c, v);
-      if (!dateValide(c.jourCourant)) c.jourCourant = premierJourOuvrable(c.debut);
+      if (!dateValide(c.jourCourant) || c.jourCourant < c.debut || c.jourCourant > c.fin) c.jourCourant = premierJourOuvrable(c.debut);
       await dbMettre('campagnes', c);
     } else {
       c = Object.assign({ id: 'camp-' + uid(), cree: Date.now(), parentId: modele ? modele.parentId || null : null }, v);
@@ -3514,8 +3519,15 @@ function ouvrirJour(date){
     (tr.length ? tr.map(function(t){ return ligneTradeHtml(t) + (E.filtre.campagne ? '' : '<div class="mini gris" style="margin:-4px 0 6px 10px">' + ech(nomCampagne(t.campagneId)) + '</div>'); }).join('') +
       '<div class="petit droite">Total : <b class="' + cls(s.total) + '">' + fmtR(s.total) + '</b></div>'
       : '<div class="petit gris">Aucun trade ce jour-là.</div>'),
-    (E.rapport ? '' : '<button id="ojSeance">Ouvrir ce jour dans la séance</button>' + (campCible ? '<button class="primaire" id="ojNouveau">+ Trade ce jour</button>' : '')) + '<button data-fermer>Fermer</button>', 'petite');
+    (E.rapport ? '' : (!tr.length && camps.some(function(id){ var j = jourDe(id, date); return j && j.teste; }) ? '<button class="pt fantome" id="ojDemarquer" style="margin-right:auto">Ne plus compter ce jour</button>' : '') +
+      '<button id="ojSeance">Ouvrir ce jour dans la séance</button>' + (campCible ? '<button class="primaire" id="ojNouveau">+ Trade ce jour</button>' : '')) + '<button data-fermer>Fermer</button>', 'petite');
   brancherLignesTrades(m);
+  if ($('#ojDemarquer', m)) $('#ojDemarquer', m).onclick = async function(){
+    for (var i = 0; i < camps.length; i++) { var j = jourDe(camps[i], date); if (j && j.teste) await ecrireJour(camps[i], date, { teste: false }); }
+    fermerModale();
+    rendre();
+    toast('Le ' + fmtJourCourt(date) + ' ne compte plus comme jour testé.', 'jaunef');
+  };
   if ($('#ojSeance', m)) $('#ojSeance', m).onclick = async function(){
     var c = campagneDe(campCible);
     if (!c) return;

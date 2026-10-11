@@ -466,7 +466,30 @@ function verif(nom, cond, detail) {
     await c.ev('IMPORT = null; allerA("import"); await recevoirFichierImport(new File(["Trade number,Type,Date and time,Signal,Price,Size,Net PnL\\\\n,,,,,,"], "vide.csv")); await new Promise(r => setTimeout(r, 200));');
     verif('fichier sans trade : message clair', (await c.ev('return document.getElementById("pileMessages").textContent')).indexOf('aucun trade') >= 0);
 
-    console.log('\n20. Test dans la page (Reglages)');
+    console.log('\n20. Repartir au 3 janvier : supprimer un trade, retirer un jour, repousser le debut');
+    await c.ev(`
+      var c = campagneActive();
+      c.debut = '2025-01-02'; c.fin = '2025-03-31'; c.jourCourant = '2025-01-02'; await dbMettre('campagnes', c);
+      allerA('seance'); await new Promise(r => setTimeout(r, 200));
+      document.querySelector('#seNouveau').click(); await new Promise(r => setTimeout(r, 300));
+      var m = document.querySelector('#modale');
+      var h = m.querySelector('#ftHeure'); h.value = '10:00'; h.dispatchEvent(new Event('input'));
+      m.querySelector('#ftSens button[data-v="long"]').click();
+      m.querySelector('#ftIssue button[data-v="sl"]').click();
+      m.querySelector('#ftEnregistrer').click(); await new Promise(r => setTimeout(r, 400));
+    `);
+    const id2 = await c.ev('var t = E.trades.filter(x => x.campagneId === campagneActive().id && x.date === "2025-01-02")[0]; return t ? t.id : null;');
+    verif('un trade le 2 janvier', !!id2);
+    await c.ev('document.querySelector(".ligne-trade[data-trade=\'' + id2 + '\']").click(); await new Promise(r => setTimeout(r, 300)); document.querySelector("#ftSupprimer").click(); await new Promise(r => setTimeout(r, 200)); document.querySelectorAll(".voile")[1].querySelector("[data-oui]").click(); await new Promise(r => setTimeout(r, 400));');
+    verif('supprime depuis sa fiche (Supprimer, puis confirmer)', await c.ev('return !E.trades.some(x => x.id === "' + id2 + '")'));
+    await c.ev('document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true })); await new Promise(r => setTimeout(r, 300)); document.querySelector("#seAvant").click(); await new Promise(r => setTimeout(r, 300));');
+    verif('le 2 janvier est marque teste, avec un bouton « annuler »', await c.ev('return campagneActive().jourCourant === "2025-01-02" && !!document.querySelector("#seDemarquer")'));
+    await c.ev('document.querySelector("#seDemarquer").click(); await new Promise(r => setTimeout(r, 300));');
+    verif('« annuler » : le 2 janvier ne compte plus comme teste', await c.ev('var j = jourDe(campagneActive().id, "2025-01-02"); return !!j && j.teste === false && !document.querySelector("#seDemarquer")'));
+    await c.ev('document.querySelector("#seModifCamp").click(); await new Promise(r => setTimeout(r, 300)); var d = document.querySelector("#fcDebut"); d.value = "2025-01-03"; document.querySelector("#fcOk").click(); await new Promise(r => setTimeout(r, 400));');
+    verif('debut repousse au 3 janvier : la seance y va toute seule', await c.ev('var c = campagneActive(); return c.debut === "2025-01-03" && c.jourCourant === "2025-01-03" && document.querySelector("#ec-seance").textContent.indexOf("Vendredi 3 janvier 2025") >= 0'));
+
+    console.log('\n21. Test dans la page (Reglages)');
     await c.aller(URL_APP + '#reglages');
     await c.ev('document.querySelector("#reTest").click(); await new Promise(r => setTimeout(r, 300));');
     const at = await c.ev('return document.querySelector("#reTestSortie").innerText');
