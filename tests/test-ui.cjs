@@ -400,7 +400,7 @@ function verif(nom, cond, detail) {
     await c.capture(path.join(SHOTS, 'import-replay.png'), true);
     await c.ev('document.querySelector("#imOk").click(); await new Promise(r => setTimeout(r, 500));');
     const imp = await c.ev('var a = E.trades.filter(t => t.date === "2025-06-02" && t.source === "tv-strategie")[0], b = E.trades.filter(t => t.date === "2025-06-03" && t.source === "tv-strategie")[0]; return { a: a && [a.issue, rDuTrade(a), a.mfe, a.mae, a.partiels.length, a.stop, conforme(a), libelleIssue(a)], b: b && [b.issue, rDuTrade(b)] };');
-    verif('trade a 3 sorties importe : +1 R, MFE 2,5, MAE 0,5, stop garde, dans le plan', JSON.stringify(imp.a) === JSON.stringify(['partiels', 1, 2.5, 0.5, 3, 19980, true, '3 sorties']), imp);
+    verif('trade a 3 sorties importe (TP1 TP2 BE) : +1 R, MFE 2,5, MAE 0,5, stop garde, dans le plan', JSON.stringify(imp.a) === JSON.stringify(['partiels', 1, 2.5, 0.5, 3, 19980, true, 'TP1 TP2 BE']), imp);
     verif('trade simple importe : -1 R', JSON.stringify(imp.b) === JSON.stringify(['autre', -1]), imp);
     await c.ev('allerA("trades"); var s = document.querySelector("#liRes"); s.value = "acompleter"; s.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
     verif('filtre « A completer » : les trades importes sans qualite', await c.ev('return tradesListe().length > 0 && tradesListe().every(t => !t.qualite)'));
@@ -435,11 +435,13 @@ function verif(nom, cond, detail) {
     verif("le prix est alle 104,5 pts contre : compte stoppe -1 R", st35.indexOf("104,5 pts contre toi") >= 0 && st35.indexOf("compté stoppé") >= 0 && st35.indexOf("Compté -1 R") >= 0, [st35.indexOf("104,5 pts contre toi"), st35.indexOf("compté stoppé"), st35.indexOf("Compté -1 R"), st35.slice(st35.indexOf("contre toi") - 60, st35.indexOf("contre toi") + 120)]);
     verif('la case garde ce que tu as tape', (await c.ev('return document.querySelector(".im-stop").value')) === '35');
     await c.ev('var i = document.querySelector(".im-stop"); i.value = "21255,25"; i.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
+    verif('apercu : les sorties nommees TP1, TP2, Cloture', (await c.ev('return document.querySelector("#imConfig").textContent')).indexOf('TP1 +0,7') >= 0 && (await c.ev('return document.querySelector("#imConfig").textContent')).indexOf('Clôture') >= 0);
     verif('avec le stop : +0,99 R', (await c.ev('return document.querySelector("#imConfig").textContent')).indexOf('+0,99 R') >= 0);
     await c.capture(path.join(SHOTS, 'import-vrai-replay.png'), true);
     await c.ev('document.querySelector("#imOk").click(); await new Promise(r => setTimeout(r, 500));');
     const tv3 = await c.ev('var t = E.trades.filter(x => x.date === "2025-01-03" && x.source === "tv-strategie")[0]; return t && [t.issue, t.partiels.length, rDuTrade(t), t.mfe, t.mae, t.stop];');
     verif('importe : 3 sorties, +0,9856 R, MFE 1,764, MAE 0,95, stop garde', JSON.stringify(tv3) === JSON.stringify(['partiels', 3, 0.9856, 1.764, 0.95, 21255.25]), tv3);
+    verif('tes sorties reconnues : TP1, TP2, Cloture', (await c.ev('var t = E.trades.filter(x => x.date === "2025-01-03" && x.source === "tv-strategie")[0]; return resumePartiels(t);')) === 'TP1 · TP2 · Clôture');
     // un Excel a 4 onglets comme celui de TradingView : la liste est dans le dernier
     const xl = await c.ev(`
       await chargerSheetJS();

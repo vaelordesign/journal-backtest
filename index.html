@@ -367,7 +367,7 @@ details.plus>summary{cursor:pointer;padding:10px 0;font-size:13px;color:var(--te
 details.plus[open]>summary{border-bottom:1px solid var(--bord);margin-bottom:10px}
 
 .part-ligne{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:7px 9px;border:1px solid var(--bord);border-radius:8px;margin-bottom:6px;background:var(--fond2)}
-.part-ligne .tp{width:34px}
+.part-ligne .tp{min-width:34px}
 .part-ligne label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--texte2)}
 .part-ligne input{width:70px;padding:5px 7px;text-align:right}
 .part-ligne .choix-boutons button{padding:5px 10px;font-size:12px}
@@ -770,7 +770,10 @@ function partielsImportes(t){ return !!(t && t.partiels && t.partiels.some(funct
 // "TP1 ✓ · TP2 ✓ · TP3 ✗", ou "3 sorties" pour un trade importe
 function resumePartiels(t){
   if (!t || t.issue !== 'partiels' || !t.partiels || !t.partiels.length) return '';
-  if (partielsImportes(t)) return t.partiels.length + ' sorties';
+  if (partielsImportes(t)) {
+    if (t.partiels.every(function(x){ return x.nom; })) return t.partiels.map(function(x){ return x.nom; }).join(' · ');
+    return t.partiels.length + ' sorties';
+  }
   return t.partiels.map(function(x, i){ return 'TP' + (i + 1) + (x.touche ? ' ✓' : ' ✗'); }).join(' · ');
 }
 // Le resultat du trade en R, selon l'issue choisie :
@@ -1103,19 +1106,27 @@ function analysePartiels(trades){
   var liste = trades.filter(function(t){ return t.issue === 'partiels' && !partielsImportes(t) && rDuTrade(t) !== null; });
   var maxN = 0;
   liste.forEach(function(t){ maxN = Math.max(maxN, t.partiels.length); });
+  // trades importes de TradingView avec des sorties nommees TP1, TP2... : ils disent quels TP ont ete pris
+  var importes = trades.filter(function(t){ return t.issue === 'partiels' && partielsImportes(t) && t.partiels.some(function(x){ return /^TP\d/.test(x.nom || ''); }); });
+  importes.forEach(function(t){ t.partiels.forEach(function(x){ var m = /^TP(\d+)/.exec(x.nom || ''); if (m) maxN = Math.max(maxN, +m[1]); }); });
   var touches = [], toutA = [];
   for (var k = 0; k < maxN; k++) {
     var avec = liste.filter(function(t){ return t.partiels[k]; });
     var nbT = avec.filter(function(t){ return t.partiels[k].touche; }).length;
-    touches.push({ k: k, nb: avec.length, nbTouche: nbT, part: avec.length ? nbT / avec.length : null,
-                   niveauMoyen: avec.length ? moyenneDe(avec.map(function(t){ return t.partiels[k].r; })) : null });
+    var niveaux = avec.map(function(t){ return t.partiels[k].r; });
+    importes.forEach(function(t){
+      var x = t.partiels.filter(function(p){ return p.nom === 'TP' + (k + 1); })[0];
+      if (x) { nbT++; niveaux.push(x.r); }
+    });
+    var nbTot = avec.length + importes.length;
+    touches.push({ k: k, nb: nbTot, nbTouche: nbT, part: nbTot ? nbT / nbTot : null, niveauMoyen: niveaux.length ? moyenneDe(niveaux) : null });
     var vals = avec.map(function(t){
       var x = t.partiels[k];
       return { id: t.id, date: t.date, heure: t.heure, cree: t.cree, issue: 'autre', r: x.touche ? x.r : (estNombre(t.resteR) ? t.resteR : -1) };
     });
     toutA.push({ k: k, stats: statsR(vals), plan: statsR(avec) });
   }
-  return { nb: liste.length, touches: touches, toutA: toutA, plan: statsR(liste) };
+  return { nb: liste.length, nbImportes: importes.length, touches: touches, toutA: toutA, plan: statsR(liste) };
 }
 
 // ---------- simulateur de challenge (Monte-Carlo) ----------
@@ -1388,6 +1399,47 @@ function multiplicateurDeduit(sorties, entree){
   }
   return arrondi(m, 4);
 }
+// Ce qu'est chaque sortie, d'apres son prix et le signal de TradingView (« Sell limit order »,
+// « Sell stop order », « Close position »). Les sorties sont dans l'ordre du temps.
+//   BE           sortie au prix d'entree (a 5 % du stop pres, ou 0,01 % du prix sans stop)
+//   SL           sortie au stop (a 5 % pres)
+//   Cloture      position fermee a la main (signal « Close »)
+//   Stop suiveur sortie en gain par un ordre stop, ou plus basse qu'un TP deja pris : un TP plus
+//                bas aurait ete touche AVANT le TP plus haut, donc c'est le stop qu'on a remonte
+//   TP1, TP2...  les autres sorties en gain, numerotees du prix le plus proche au plus loin
+//                (meme prix = meme TP)
+//   Sortie en perte : en perte sans etre au stop (stop resserre, ou sortie a la main)
+function nommerSorties(sorties, sens, entree, stop){
+  var dir = sens === 'short' ? -1 : 1;
+  var ptsStop = estNombre(stop) && estNombre(entree) && Math.abs(entree - stop) > 0 ? Math.abs(entree - stop) : null;
+  var tol = ptsStop ? ptsStop * 0.05 : Math.abs(entree || 0) * 0.0001;
+  var types = [], plusHautTP = null;
+  sorties.forEach(function(x){
+    if (!estNombre(x.prix) || !estNombre(entree)) { types.push({ type: 'sortie' }); return; }
+    var pts = dir * (x.prix - entree), sig = normaliserTexte(x.signal);
+    var cloture = sig.indexOf('close') >= 0 || sig.indexOf('clotur') >= 0 || sig.indexOf('ferme') >= 0;
+    var t;
+    if (Math.abs(pts) <= tol) t = 'be';
+    else if (ptsStop && pts <= -ptsStop + tol) t = 'sl';
+    else if (pts < 0) t = cloture ? 'cloture' : 'perte';
+    else if (cloture) t = 'cloture';
+    else if (sig.indexOf('stop') >= 0 || (plusHautTP !== null && pts < plusHautTP - tol)) t = 'suiveur';
+    else { t = 'tp'; if (plusHautTP === null || pts > plusHautTP) plusHautTP = pts; }
+    types.push({ type: t, pts: pts });
+  });
+  var niveauxTP = [];
+  types.forEach(function(x){
+    if (x.type !== 'tp') return;
+    if (!niveauxTP.some(function(n){ return Math.abs(n - x.pts) <= tol; })) niveauxTP.push(x.pts);
+  });
+  niveauxTP.sort(function(a, b){ return a - b; });
+  var noms = { be: 'BE', sl: 'SL', cloture: 'Clôture', suiveur: 'Stop suiveur', perte: 'Sortie en perte', sortie: 'Sortie' };
+  return types.map(function(x){
+    if (x.type !== 'tp') return noms[x.type];
+    for (var k = 0; k < niveauxTP.length; k++) if (Math.abs(niveauxTP[k] - x.pts) <= tol) return 'TP' + (k + 1);
+    return 'TP';
+  });
+}
 // Un trade (toutes ses sorties) mis en R.
 //   stop connu : chaque sortie vaut (prix - entree) / (entree - stop), le plus juste ;
 //   sinon unR : le nombre de dollars que vaut 1 R pour toute la position.
@@ -1401,6 +1453,9 @@ function calculerTradeTV(g, unR, stop){
     if (estNombre(x.drawdown)) dd = Math.max(dd === null ? 0 : dd, Math.abs(x.drawdown) / q);
   });
   var res = { r: null, mfe: null, mae: null, partiels: null, issue: g.sorties.length > 1 ? 'partiels' : 'autre', mode: null, stop: null };
+  var stopValide = estNombre(stop) && estNombre(g.entree) && (g.sens === 'short' ? stop > g.entree : stop < g.entree);
+  res.noms = nommerSorties(g.sorties, g.sens, g.entree, stopValide ? stop : null);
+  res.sortieNom = g.sorties.length === 1 ? res.noms[0] : null;
   var niveaux = null, risque = null;
   if (estNombre(stop) && estNombre(g.entree) && (g.sens === 'short' ? stop > g.entree : stop < g.entree)) {
     niveaux = g.sorties.map(function(x){ return rDepuisPrix(g.sens, g.entree, stop, x.prix); });
@@ -1427,7 +1482,7 @@ function calculerTradeTV(g, unR, stop){
   }
   if (g.sorties.length > 1) {
     res.partiels = g.sorties.map(function(x, i){
-      return { r: niveaux[i], pct: arrondi(100 * (x.qte || 1) / Q, 4), touche: true, sortie: true, prix: x.prix, heure: x.heure };
+      return { r: niveaux[i], pct: arrondi(100 * (x.qte || 1) / Q, 4), touche: true, sortie: true, prix: x.prix, heure: x.heure, nom: res.noms[i] };
     });
   }
   // Le prix est alle plus loin contre toi que ton stop (MAE au-dela de 1 R) : avec ce stop,
@@ -1504,7 +1559,8 @@ function lireListeTradesTV(lignes, unR, stops){
       prix: c.prix >= 0 ? versNombre(sortie[c.prix]) : null,
       qte: qte && qte > 0 ? qte : 1,
       profit: profit, runup: ru, drawdown: dd,
-      dateS: dhS ? dhS.date : dh.date, heureS: dhS ? dhS.heure : ''
+      dateS: dhS ? dhS.date : dh.date, heureS: dhS ? dhS.heure : '',
+      signal: c.signal >= 0 ? String(sortie[c.signal] || '') : ''
     });
   });
   // regroupement des morceaux d'un meme trade
@@ -1524,7 +1580,7 @@ function lireListeTradesTV(lignes, unR, stops){
       cle: cle, numTV: ms.map(function(x){ return x.num; }).join('+'), date: p0.date, heure: p0.heure, sens: p0.sens,
       entree: p0.entree, sortie: der.prix,
       qte: ms.reduce(function(a, x){ return a + x.qte; }, 0),
-      sorties: ms.map(function(x){ return { prix: x.prix, qte: x.qte, profit: x.profit, runup: x.runup, drawdown: x.drawdown, date: x.dateS, heure: x.heureS }; }),
+      sorties: ms.map(function(x){ return { prix: x.prix, qte: x.qte, profit: x.profit, runup: x.runup, drawdown: x.drawdown, date: x.dateS, heure: x.heureS, signal: x.signal }; }),
       profit: arrondi(ms.reduce(function(a, x){ return a + x.profit; }, 0), 4),
       duree: null
     };
@@ -2444,10 +2500,10 @@ function libelleIssue(t){
   if (t.issue === 'sl') return 'SL';
   if (t.issue === 'be') return 'BE';
   if (t.issue === 'partiels' && t.partiels) {
-    if (partielsImportes(t)) return t.partiels.length + ' sorties';
+    if (partielsImportes(t)) return resumePartiels(t).split(' \u00b7 ').join(' ');
     return t.partiels.filter(function(x){ return x.touche; }).length + '/' + t.partiels.length + ' TP';
   }
-  return '';
+  return t.sortieNom || '';
 }
 function prixCourt(v){ return estNombre(v) ? fmtNombre(v, Math.abs(v - Math.round(v)) < EPS ? 0 : 2) : '--'; }
 // 104,50 -> « 104,5 » ; 35,00 -> « 35 »
@@ -2774,7 +2830,7 @@ async function formulaireTrade(id, defauts){
     var boite = $('#ftPartLignes', m);
     boite.innerHTML = parts.map(function(x, i){
       return '<div class="part-ligne" data-i="' + i + '">' +
-        '<b class="tp">TP' + (i + 1) + '</b>' +
+        '<b class="tp">' + ech(x.nom || ('TP' + (i + 1))) + '</b>' +
         '<label>niveau <input data-c="r" inputmode="decimal" value="' + (estNombre(x.r) ? String(arrondi(x.r, 3)).replace('.', ',') : '') + '"> R</label>' +
         '<label>part <input data-c="pct" inputmode="decimal" value="' + (estNombre(x.pct) ? String(arrondi(x.pct, 2)).replace('.', ',') : '') + '"> %</label>' +
         '<div class="choix-boutons"><button type="button" data-t="1"' + (x.touche ? ' class="on"' : '') + '>Touché</button><button type="button" data-t="0"' + (!x.touche ? ' class="on"' : '') + '>Raté</button></div>' +
@@ -2937,7 +2993,7 @@ async function formulaireTrade(id, defauts){
     if (f.issue === 'partiels') {
       t.partiels = parts.map(function(x){
         var o = { r: x.r, pct: x.pct, touche: !!x.touche };
-        if (x.sortie) { o.sortie = true; if (x.prix !== undefined) o.prix = x.prix; if (x.heure) o.heure = x.heure; }
+        if (x.sortie) { o.sortie = true; if (x.prix !== undefined) o.prix = x.prix; if (x.heure) o.heure = x.heure; if (x.nom) o.nom = x.nom; }
         return o;
       });
       t.resteR = parts.some(function(x){ return !x.touche; }) ? resteVal() : null;
@@ -3722,7 +3778,7 @@ function rendreAnalyses(){
 // Ce que donnent tes vrais partiels (trades notes avec TP1, TP2, TP3 dans la fiche).
 function cartePartiels(tr){
   var ap = analysePartiels(tr);
-  if (!ap.nb) return '';
+  if (!ap.nb && !ap.nbImportes) return '';
   var lignes = ap.touches.map(function(x){
     return '<tr><td>TP' + (x.k + 1) + '</td><td class="num">' + fmtR(x.niveauMoyen, 1) + '</td><td class="num">' + x.nbTouche + ' / ' + x.nb + '</td><td class="num gras">' + fmtPct(x.part) + '</td></tr>';
   }).join('');
@@ -3743,10 +3799,13 @@ function cartePartiels(tr){
     (meilleur && meilleur.e > 0.05 ? 'Sur ces trades, <b>tout sortir à TP' + (meilleur.k + 1) + '</b> aurait rapporté <b>' + fmtNombre(meilleur.e, 2) + ' R de plus par trade</b> que tes partiels. Les partiels rassurent, mais ici ils coûtent.'
       : '<b>Tes partiels tiennent la route :</b> aucune sortie à un seul TP ne fait nettement mieux sur ces trades.');
   return '<div class="carte"><h3>Tes sorties partielles</h3>' +
-    '<p class="petit gris">Sur les ' + pluriel(ap.nb, 'trade noté', 'trades notés') + ' avec TP1, TP2, TP3 dans la fiche. Pour « tout sortir à un TP », une part qui rate ce TP sort comme le reste de ce trade-là (stop ou point mort).</p>' +
+    '<p class="petit gris">Sur les ' + pluriel(ap.nb, 'trade noté', 'trades notés') + ' avec TP1, TP2, TP3 dans la fiche' +
+      (ap.nbImportes ? ', plus ' + pluriel(ap.nbImportes, 'trade importé', 'trades importés') + ' de TradingView pour le tableau des TP touchés' : '') +
+      '. Pour « tout sortir à un TP », une part qui rate ce TP sort comme le reste de ce trade-là (stop ou point mort).</p>' +
     '<div class="deux-col"><div class="tableau-boite"><table class="auto"><thead><tr><th>TP</th><th class="num">Niveau moyen</th><th class="num">Touché</th><th class="num">%</th></tr></thead><tbody>' + lignes + '</tbody></table></div>' +
-    '<div class="tableau-boite"><table class="auto"><thead><tr><th>Façon de sortir</th><th class="num">Trades</th><th class="num">Réussite</th><th class="num">Espérance</th><th class="num">Total</th></tr></thead><tbody>' + comp + '</tbody></table></div></div>' +
-    '<div class="avis ' + (meilleur && meilleur.e > 0.05 && ap.nb >= MIN_FIABLE ? 'jaunef' : 'bleuf') + ' mt12 petit">' + verdict + '</div>' +
+    (ap.nb ? '<div class="tableau-boite"><table class="auto"><thead><tr><th>Façon de sortir</th><th class="num">Trades</th><th class="num">Réussite</th><th class="num">Espérance</th><th class="num">Total</th></tr></thead><tbody>' + comp + '</tbody></table></div>'
+      : '<div class="petit gris">La comparaison « tout sortir à un seul TP » demande de connaître les TP ratés : elle se fait avec les trades notés dans la fiche (bouton TP1 TP2 TP3). Pour tes trades importés, va dans Cible et stop : ton plan y est rejoué avec le MFE.</div>') + '</div>' +
+    (ap.nb ? '<div class="avis ' + (meilleur && meilleur.e > 0.05 && ap.nb >= MIN_FIABLE ? 'jaunef' : 'bleuf') + ' mt12 petit">' + verdict + '</div>' : '') +
     '<div class="aide">Pour rejouer ton plan avec d\'autres niveaux, va dans Cible et stop (il faut le MFE).</div></div>';
 }
 
@@ -4567,7 +4626,10 @@ function lireImport(){
 }
 function sortiesHtml(t){
   if (!t.sorties) return '--';
-  return t.sorties.map(function(x){ return '<span class="nowrap">' + prixCourt(x.prix) + (t.sorties.length > 1 ? ' <span class="gris">× ' + fmtNombre(x.qte, 0) + '</span>' : '') + '</span>'; }).join(', ');
+  return t.sorties.map(function(x, i){
+    var nom = t.noms && t.noms[i] ? ' <b class="' + (/^TP/.test(t.noms[i]) ? 'vert' : (t.noms[i] === 'SL' || t.noms[i] === 'Sortie en perte' ? 'rouge' : 'jaune')) + '">' + ech(t.noms[i]) + '</b>' : '';
+    return '<span class="nowrap">' + prixCourt(x.prix) + (t.sorties.length > 1 ? ' <span class="gris">× ' + fmtNombre(x.qte, 0) + '</span>' : '') + nom + '</span>';
+  }).join(', ');
 }
 function peindreConfigImport(){
   var I = IMPORT, boite = $('#imConfig');
@@ -4624,7 +4686,8 @@ function peindreConfigImport(){
               (estNombre((I.stops || {})[t.cle]) && estNombre(t.entree) ? '<div class="mini gris">= ' + prixCourt(I.stops[t.cle]) + ' · ' + nombreCourt(Math.abs(t.entree - I.stops[t.cle])) + ' pts</div>' : '')) + '</td>' : '') +
           '<td class="num gras ' + cls(r) + '">' + (r === null ? '<span class="jaune petit">stop ?</span>' : fmtR(r)) +
             (t.stoppe ? '<div class="mini rouge" style="white-space:normal;min-width:170px">Le prix est allé ' + nombreCourt(t.ptsContre) + ' pts contre toi, plus loin que ce stop : il aurait sauté. Compté -1 R (sinon ' + fmtR(t.rSorties) + ').</div>' : '') +
-            (t.partiels && t.partiels.length ? '<div class="mini gris">' + t.partiels.map(function(x){ return fmtR(x.r, 1) + ' (' + fmtNombre(x.pct, 0) + ' %)'; }).join(' + ') + '</div>' : '') + '</td>' +
+            (t.partiels && t.partiels.length ? '<div class="mini gris">' + t.partiels.map(function(x){ return (x.nom ? ech(x.nom) + ' ' : '') + fmtR(x.r, 1) + ' (' + fmtNombre(x.pct, 0) + ' %)'; }).join(' + ') + '</div>' : '') +
+            (t.sortieNom && !t.stoppe && r !== null ? '<div class="mini gris">' + ech(t.sortieNom) + '</div>' : '') + '</td>' +
           '<td class="num">' + (estNombre(t.mfe) ? fmtR(t.mfe) : '--') + '</td><td class="num">' + (estNombre(t.mae) ? fmtNombre(t.mae, 2) : '--') + '</td></tr>';
       }).join('') + (!tous && res.trades.length > 12 ? '<tr><td colspan="7" class="gris petit">... et ' + (res.trades.length - 12) + ' autres</td></tr>' : '') + '</tbody></table></div>';
   }
@@ -4682,7 +4745,7 @@ function peindreConfigImport(){
         qualite: t.qualite || '', biais: '', tags: t.tags || [],
         notes: t.stoppe ? 'Import : compté stoppé, le prix est allé ' + nombreCourt(t.ptsContre) + ' pts contre ce stop (sorties réelles : ' + fmtR(t.rSorties) + ').' : (t.notes || ''),
         liens: [], douteux: false, nbImages: 0, source: t.source, numTV: t.numTV || null, profit: estNombre(t.profit) ? t.profit : null,
-        importCle: t.importCle, cree: maintenant + i
+        sortieNom: t.sortieNom || null, importCle: t.importCle, cree: maintenant + i
       };
     });
     await dbMettreLot('trades', liste);

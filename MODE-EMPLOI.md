@@ -175,8 +175,16 @@ glissés sur le graphique), et importer la séance d'un coup.
    **Si le prix est allé plus loin contre toi que ce stop** (le fichier le dit, colonne « Adverse
    excursion »), ton stop aurait sauté : l'app compte le trade **-1 R**, et te montre ce qu'auraient
    donné les sorties réelles. C'est la règle d'un backtest honnête.
-6. **Importer.** Les sorties partielles d'un même trade sont regroupées en un seul trade
-   (« 3 sorties »), le Run-up devient le MFE et le Drawdown le MAE.
+6. **Importer.** Les sorties partielles d'un même trade sont regroupées en un seul trade, et
+   chaque sortie est reconnue d'après son prix et le type d'ordre :
+   - **TP1, TP2, TP3** : les sorties en gain par ordre limite, du prix le plus proche au plus loin ;
+   - **BE** : une sortie au prix d'entrée (ton stop remonté au point mort après un TP) ;
+   - **Stop suiveur** : une sortie en gain par ordre stop, ou plus basse qu'un TP déjà pris
+     (un TP plus bas aurait été touché avant) ;
+   - **Clôture** : une position fermée à la main ; **SL** : une sortie à ton stop.
+
+   Le résultat en R de chaque sortie et du trade entier se calcule avec ton stop. Le Run-up devient
+   le MFE et le Drawdown le MAE.
 7. Les étapes obligatoires sont cochées si tu laisses la case « Je n'ai pris que des setups
    valides ». Il te reste la qualité, le biais et la capture : écran **Trades**, filtre
    « À compléter ».
@@ -218,7 +226,7 @@ envoyées. Le lien ne marche pour quelqu'un d'autre que si l'app est en ligne.
 ## 8. Vérifier les calculs
 
 - Dans l'app : **Réglages**, bouton **Lancer le test**.
-- Le test complet (261 vérifications, chaque résultat calculé à la main) :
+- Le test complet (275 vérifications, chaque résultat calculé à la main) :
 
 ```
 node verifier-moteur.cjs

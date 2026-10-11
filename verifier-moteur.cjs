@@ -28,7 +28,7 @@ const M = new Function(code + `
            simulerChallenge, balayageRisque, eventailR, parserCSV, detecterOrdreDates, separerDateHeure, sensDepuisTexte,
            issueDepuisTexte, colonnesTV, estListeTradesTV, lireListeTradesTV, proposerUnR, devinerColonnes, lireTableurGenerique,
            rTradeJournal, depuisJournal, rDesPartiels, planDe, PLAN_DEFAUT, resumePartiels, partielsImportes, analysePartiels,
-           multiplicateurDeduit, calculerTradeTV, stopDepuisSaisie };
+           multiplicateurDeduit, calculerTradeTV, stopDepuisSaisie, nommerSorties };
 `)();
 
 let echecs = 0, reussites = 0;
@@ -425,7 +425,8 @@ verifier('MFE 50 / 20 points = 2,5 R', A.mfe, 2.5);
 verifier('MAE 10 / 20 points = 0,5 R', A.mae, 0.5);
 verifier('duree 09:41 -> 10:30', A.duree, 49);
 verifier('le trade a une seule sortie reste simple', [B.issue, B.r, B.partiels, B.mfe, B.mae], ['autre', -1, null, 0, 1]);
-verifier('un trade importe se resume en sorties', M.resumePartiels({ issue: 'partiels', partiels: A.partiels }), '3 sorties');
+verifier('un trade importe se resume par ses sorties nommees', M.resumePartiels({ issue: 'partiels', partiels: A.partiels }), 'TP1 · TP2 · BE');
+verifier('sans nom (ancien import) : le nombre de sorties', M.resumePartiels({ issue: 'partiels', partiels: A.partiels.map(x => Object.assign({}, x, { nom: undefined })) }), '3 sorties');
 rp = M.lireListeTradesTV(LP3, 160);
 verifier('sans stop, 1 R = 160 $ : memes niveaux', [rp.trades[0].partiels.map(x => x.r), rp.trades[0].r, rp.trades[0].mfe], [[1, 2, 0], 1, 2.5]);
 rp = M.lireListeTradesTV(LP3, 200);
@@ -491,6 +492,27 @@ st = M.lireListeTradesTV(LR, 0, { [cleR]: 21365.25 - 104.5 }).trades[0];
 verifier('stop pile au plus bas (104,5 pts) : pas stoppe', [st.stoppe || false, st.mae, st.issue], [false, 1, 'partiels']);
 st = M.lireListeTradesTV(LR, 650.5 / 3).trades[0];
 verifier('avec « 1 R = X $ » on ne peut pas savoir : pas de stop invente', st.stoppe || false, false);
+
+titre('18. Reconnaitre TP1, TP2, TP3, BE, stop suiveur, cloture et SL');
+// ton trade du 3 janvier : 2 ordres limites puis « Close position » plus bas que TP2
+verifier('ton trade : TP1, TP2, puis cloture a la main', M.lireListeTradesTV(LR, 0, { [cleR]: 21255.25 }).trades[0].partiels.map(x => x.nom), ['TP1', 'TP2', 'Clôture']);
+verifier('les noms sont la avant meme le stop', M.lireListeTradesTV(LR, 0).trades[0].noms, ['TP1', 'TP2', 'Clôture']);
+verifier('TP1, TP2, puis sortie au prix d\'entree = BE', M.lireListeTradesTV(LP3, 0, { [cleA]: 19980 }).trades[0].partiels.map(x => x.nom), ['TP1', 'TP2', 'BE']);
+verifier('short sorti au stop = SL', M.lireListeTradesTV(LP3, 0, { [cleB]: 20110 }).trades[1].sortieNom, 'SL');
+const SO = (prix, signal) => ({ prix: prix, signal: signal || '' });
+verifier('long 100, stop 90 : 110 et 120 limites, 115 par ordre stop',
+  M.nommerSorties([SO(110, 'Sell limit order'), SO(120, 'Sell limit order'), SO(115, 'Sell stop order')], 'long', 100, 90), ['TP1', 'TP2', 'Stop suiveur']);
+verifier('plus bas qu\'un TP deja pris, sans signal = stop remonte', M.nommerSorties([SO(120), SO(110)], 'long', 100, 90), ['TP1', 'Stop suiveur']);
+verifier('TP numerotes par prix, pas par ordre d\'arrivee', M.nommerSorties([SO(130), SO(130), SO(140)], 'long', 100, 90), ['TP1', 'TP1', 'TP2']);
+verifier('short : TP sous l\'entree, BE a l\'entree, a 5 % du stop pres', M.nommerSorties([SO(80), SO(60), SO(100.4)], 'short', 100, 110), ['TP1', 'TP2', 'BE']);
+verifier('en perte sans etre au stop', M.nommerSorties([SO(95)], 'long', 100, 90), ['Sortie en perte']);
+verifier('au stop (a 5 % pres) = SL', M.nommerSorties([SO(90.3)], 'long', 100, 90), ['SL']);
+verifier('sans stop, BE a 0,01 % du prix', M.nommerSorties([SO(21402), SO(21367)], 'long', 21365.25), ['TP1', 'BE']);
+verifier('la fiche garde le nom de la sortie unique', M.lireListeTradesTV(LP3, 0, { [cleB]: 20110 }).trades[1].sortieNom, 'SL');
+const API = M.analysePartiels([
+  { id: 'i1', date: '2025-01-03', issue: 'partiels', partiels: [{ r: 1, pct: 50, touche: true, sortie: true, nom: 'TP1' }, { r: 2, pct: 25, touche: true, sortie: true, nom: 'TP2' }, { r: 0, pct: 25, touche: true, sortie: true, nom: 'BE' }] },
+  { id: 'i2', date: '2025-01-06', issue: 'partiels', partiels: [{ r: 1, pct: 50, touche: true, sortie: true, nom: 'TP1' }, { r: 0, pct: 50, touche: true, sortie: true, nom: 'BE' }] }]);
+verifier('analyse : les trades importes comptent dans les TP touches', [API.nbImportes, API.touches.map(t => t.nbTouche + '/' + t.nb)], [2, ['2/2', '1/2']]);
 
 /* ------------------------------------------------------------------ */
 console.log('\n' + '='.repeat(60));
