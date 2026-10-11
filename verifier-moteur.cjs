@@ -28,7 +28,7 @@ const M = new Function(code + `
            simulerChallenge, balayageRisque, eventailR, parserCSV, detecterOrdreDates, separerDateHeure, sensDepuisTexte,
            issueDepuisTexte, colonnesTV, estListeTradesTV, lireListeTradesTV, proposerUnR, devinerColonnes, lireTableurGenerique,
            rTradeJournal, depuisJournal, rDesPartiels, planDe, PLAN_DEFAUT, resumePartiels, partielsImportes, analysePartiels,
-           multiplicateurDeduit, calculerTradeTV };
+           multiplicateurDeduit, calculerTradeTV, stopDepuisSaisie };
 `)();
 
 let echecs = 0, reussites = 0;
@@ -475,6 +475,22 @@ const cx = M.colonnesTV(LX[0]);
 verifier('Excel : colonnes sans USD reconnues', [cx.prix, cx.qte, cx.profit, cx.runup, cx.drawdown], [4, 5, 6, 9, 10]);
 const tx = M.lireListeTradesTV(LX, 0, { '2025-01-03 09:48|long|21365.25': 21255.25 }).trades[0];
 verifier('Excel : date en numero de serie et R', [tx.date, tx.heure, tx.r], ['2025-01-03', '09:48', 0.7114]);
+
+titre('17. La case « Ton stop » : prix ou points, et le stop qui aurait saute');
+verifier('un prix', M.stopDepuisSaisie('21 330,25', 'long', 21365.25), 21330.25);
+verifier('35 = 35 points sous l\'entree d\'un long', M.stopDepuisSaisie('35', 'long', 21365.25), 21330.25);
+verifier('« 35 pts » au-dessus de l\'entree d\'un short', M.stopDepuisSaisie('35 pts', 'short', 21000), 21035);
+verifier('« 2,5p » sur une action a 100 $', M.stopDepuisSaisie('2,5p', 'long', 100), 97.5);
+verifier('vide, texte, negatif = rien', [M.stopDepuisSaisie('', 'long', 100), M.stopDepuisSaisie('abc', 'long', 100), M.stopDepuisSaisie('-5', 'long', 100)], [null, null, null]);
+// ton trade : le prix est descendu de 104,5 points (209 $ par contrat) avant de monter
+let st = M.lireListeTradesTV(LR, 0, { [cleR]: M.stopDepuisSaisie('35', 'long', 21365.25) }).trades[0];
+verifier('stop a 35 pts : le prix est alle 104,5 pts contre toi, le stop aurait saute', [st.stoppe, st.issue, st.r, st.partiels, st.mfe, st.ptsContre], [true, 'sl', -1, null, null, 104.5]);
+verifier('les sorties reelles auraient donne (2,2357 + 3,6357 + 3,4214) / 3', st.rSorties, 3.0976);
+verifier('rDuTrade le compte -1', M.rDuTrade(st), -1);
+st = M.lireListeTradesTV(LR, 0, { [cleR]: 21365.25 - 104.5 }).trades[0];
+verifier('stop pile au plus bas (104,5 pts) : pas stoppe', [st.stoppe || false, st.mae, st.issue], [false, 1, 'partiels']);
+st = M.lireListeTradesTV(LR, 650.5 / 3).trades[0];
+verifier('avec « 1 R = X $ » on ne peut pas savoir : pas de stop invente', st.stoppe || false, false);
 
 /* ------------------------------------------------------------------ */
 console.log('\n' + '='.repeat(60));

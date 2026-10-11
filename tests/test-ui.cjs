@@ -429,6 +429,11 @@ function verif(nom, cond, detail) {
     await c.ev('allerA("seance"); IMPORT = null; await importerSauvegarde(new File(["' + vrai + '"], "Replay_Trading_CME_MINI_MNQ1!_2026-10-10_7994d.csv", { type: "text/csv" })); await new Promise(r => setTimeout(r, 400));');
     verif('la liste de trades part dans l\'ecran Import (plus de « JSON illisible »)', await c.ev('return E.ecran === "import" && IMPORT && IMPORT.type === "tv"'));
     verif('1 trade, 3 sorties partielles regroupees', (await c.ev('return document.querySelector("#imConfig").textContent')).split(' ').join(' ').indexOf('1 trade, dont 1 avec des sorties partielles') >= 0);
+    await c.ev('var i = document.querySelector(".im-stop"); i.value = "35"; i.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
+    const st35 = await c.ev('return document.querySelector("#imConfig").textContent.split("\\u00a0").join(" ")');
+    verif('stop tape en points : 35 = 21 330,25', st35.indexOf('= 21 330,25 · 35 pts') >= 0, st35.slice(st35.indexOf('Ton stop'), st35.indexOf('Ton stop') + 400));
+    verif("le prix est alle 104,5 pts contre : compte stoppe -1 R", st35.indexOf("104,5 pts contre toi") >= 0 && st35.indexOf("compté stoppé") >= 0 && st35.indexOf("Compté -1 R") >= 0, [st35.indexOf("104,5 pts contre toi"), st35.indexOf("compté stoppé"), st35.indexOf("Compté -1 R"), st35.slice(st35.indexOf("contre toi") - 60, st35.indexOf("contre toi") + 120)]);
+    verif('la case garde ce que tu as tape', (await c.ev('return document.querySelector(".im-stop").value')) === '35');
     await c.ev('var i = document.querySelector(".im-stop"); i.value = "21255,25"; i.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
     verif('avec le stop : +0,99 R', (await c.ev('return document.querySelector("#imConfig").textContent')).indexOf('+0,99 R') >= 0);
     await c.capture(path.join(SHOTS, 'import-vrai-replay.png'), true);

@@ -1430,7 +1430,31 @@ function calculerTradeTV(g, unR, stop){
       return { r: niveaux[i], pct: arrondi(100 * (x.qte || 1) / Q, 4), touche: true, sortie: true, prix: x.prix, heure: x.heure };
     });
   }
+  // Le prix est alle plus loin contre toi que ton stop (MAE au-dela de 1 R) : avec ce stop,
+  // le trade aurait saute avant de gagner. Un backtest honnete le compte -1 R. Le MFE est
+  // efface : on ne sait pas si le prix est monte avant ou apres avoir touche le stop.
+  if (res.mode === 'stop' && estNombre(res.mae) && res.mae > 1 + 1e-3) {
+    res.stoppe = true;
+    res.rSorties = res.r;
+    res.r = -1;
+    res.issue = 'sl';
+    res.partiels = null;
+    res.mfe = null;
+    res.ptsContre = g.multiplicateur && dd !== null ? arrondi(dd / g.multiplicateur, 2) : arrondi(res.mae * Math.abs(g.entree - stop), 2);
+  }
   return res;
+}
+// Ce qu'on tape dans la case Stop : un prix (21 330,25) ou une distance en points (35, « 35 pts »).
+// Un nombre plus petit que 20 % du prix d'entree ne peut pas etre un prix de stop : c'est une distance.
+function stopDepuisSaisie(txt, sens, entree){
+  var s = String(txt === undefined || txt === null ? '' : txt).trim();
+  if (!s) return null;
+  var enPoints = /(pts?|points?|p)\.?$/i.test(s.replace(/\s+/g, ''));
+  var v = versNombre(s);
+  if (v === null || !(v > 0)) return null;
+  if (!estNombre(entree)) return enPoints ? null : v;
+  if (enPoints || v < Math.abs(entree) * 0.2) return arrondi(sens === 'short' ? entree + v : entree - v, 6);
+  return v;
 }
 // Liste des trades du testeur de strategie OU du Replay Trading de TradingView (memes onglets).
 // TradingView coupe un trade en autant de lignes qu'il a de sorties partielles : chaque morceau a
@@ -2421,6 +2445,12 @@ function libelleIssue(t){
   return '';
 }
 function prixCourt(v){ return estNombre(v) ? fmtNombre(v, Math.abs(v - Math.round(v)) < EPS ? 0 : 2) : '--'; }
+// 104,50 -> « 104,5 » ; 35,00 -> « 35 »
+function nombreCourt(v){
+  var t = fmtNombre(v, 2);
+  if (t.indexOf(',') >= 0) t = t.replace(/0+$/, '').replace(/,$/, '');
+  return t;
+}
 function ligneTradeHtml(t, avecDate){
   var r = rDuTrade(t);
   var sous = [seanceDuTrade(t)];
@@ -4547,8 +4577,10 @@ function peindreConfigImport(){
       : 'Tableau quelconque : vérifie quelle colonne correspond à quoi. ' + pluriel(I.lignes.length - 1, 'ligne') + '.') + '</p>' +
     '<div class="ligne" style="margin-bottom:10px"><span class="petit">Ranger dans la campagne</span>' + selectCampagnes('imCamp', I.campagneId) + '</div>';
   if (I.type === 'tv') {
-    html += '<div class="avis bleuf petit"><b>Le fichier ne contient pas ton stop.</b> Pour avoir le R exact, écris le prix du stop de chaque trade dans la colonne Stop (le plus juste). ' +
-      'Si tu risques toujours le même montant, tu peux plutôt dire combien vaut 1 R en dollars : il sert pour tous les trades sans stop.</div>' +
+    html += '<div class="avis bleuf petit"><b>Le stop, c\'est ton stop loss :</b> le prix où tu sortais en perte si le marché partait contre toi (la ligne SL sur ton graphique). ' +
+      'TradingView ne le met pas dans le fichier, alors écris-le dans la colonne <b>Ton stop</b> : en prix (21 330,25) ou en points (35). ' +
+      'C\'est lui qui fixe la taille de 1 R : sans lui, impossible de savoir si +650 $ vaut +1 R ou +3 R. ' +
+      'Si tu risques toujours le même montant en dollars, tu peux plutôt l\'écrire une fois ci-dessous.</div>' +
       '<div class="ligne" style="margin-bottom:10px"><label class="champ mb0" style="width:200px"><span>1 R = combien de dollars ?</span><input id="imUnR" inputmode="decimal" value="' + (I.unR ? String(I.unR).replace('.', ',') : '') + '" placeholder="facultatif"></label>' +
       (I.unRPropose && !I.unR ? '<button class="pt" id="imUnRPropose">Prendre la perte médiane du fichier (' + fmtArgent(I.unRPropose, 2) + ')</button>' : '') + '</div>';
   } else {
@@ -4561,20 +4593,25 @@ function peindreConfigImport(){
   if (res.erreur) html += '<div class="avis rougef">' + ech(res.erreur) + '</div>';
   html += '<div class="avis ' + (prets.length ? 'vertf' : 'jaunef') + '"><b>' + pluriel(prets.length, 'trade prêt', 'trades prêts') + ' à importer</b>' +
     (enAttente ? ', <b>' + pluriel(enAttente, 'trade attend', 'trades attendent') + ' son stop ou 1 R</b>' : '') +
+    (res.trades.filter(function(t){ return t.stoppe && !deja[t.importCle]; }).length ? ', dont <b class="rouge">' + pluriel(res.trades.filter(function(t){ return t.stoppe && !deja[t.importCle]; }).length, 'compté stoppé', 'comptés stoppés') + '</b> (le prix a dépassé ton stop)' : '') +
     (res.trades.length - nouveaux.length ? ', ' + (res.trades.length - nouveaux.length) + ' déjà importé(s) dans cette campagne' : '') +
     (res.ignores.length ? ', ' + pluriel(res.ignores.length, 'ligne écartée', 'lignes écartées') + ' (' + ech(res.ignores.slice(0, 3).map(function(x){ return 'ligne ' + x.ligne + ' : ' + x.raison; }).join(' ; ')) + (res.ignores.length > 3 ? '...' : '') + ')' : '') + '.</div>';
   if (res.trades.length) {
     var tous = I.type === 'tv';
     html += '<div class="tableau-boite" style="max-height:520px;overflow-y:auto"><table><thead><tr><th>Date</th><th>Heure</th><th>Sens</th>' +
-      (tous ? '<th class="num">Entrée</th><th>Sorties</th><th class="num">Profit</th><th>Stop</th>' : '') +
+      (tous ? '<th class="num">Entrée</th><th>Sorties</th><th class="num">Profit</th><th>Ton stop</th>' : '') +
       '<th class="num">Résultat</th><th class="num">MFE</th><th class="num">MAE</th></tr></thead><tbody>' +
       (tous ? res.trades : res.trades.slice(0, 12)).map(function(t){
         var r = rDuTrade(t), dejaLa = !!deja[t.importCle];
         return '<tr' + (dejaLa ? ' class="faible"' : '') + '><td>' + fmtJour(t.date) + '</td><td>' + (t.heure || '--') + '</td><td>' + libelleSens(t.sens) + (t.sensDevine ? ' <span class="puce j">deviné</span>' : '') + '</td>' +
           (tous ? '<td class="num">' + prixCourt(t.entree) + '</td><td class="petit">' + sortiesHtml(t) + '</td>' +
             '<td class="num ' + cls(t.profit) + '">' + fmtArgent(t.profit, 2) + '</td>' +
-            '<td>' + (dejaLa ? '<span class="petit gris">déjà importé</span>' : '<input class="im-stop" data-cle="' + ech(t.cle) + '" inputmode="decimal" style="width:100px;padding:4px 6px" placeholder="prix du stop" value="' + (estNombre((I.stops || {})[t.cle]) ? String(I.stops[t.cle]).replace('.', ',') : '') + '">') + '</td>' : '') +
+            '<td>' + (dejaLa ? '<span class="petit gris">déjà importé</span>' :
+              '<input class="im-stop" data-cle="' + ech(t.cle) + '" data-sens="' + t.sens + '" data-entree="' + (estNombre(t.entree) ? t.entree : '') + '" inputmode="decimal" style="width:110px;padding:4px 6px" placeholder="prix ou points" value="' +
+                ech((I.stopsSaisie || {})[t.cle] !== undefined ? I.stopsSaisie[t.cle] : '') + '">' +
+              (estNombre((I.stops || {})[t.cle]) && estNombre(t.entree) ? '<div class="mini gris">= ' + prixCourt(I.stops[t.cle]) + ' · ' + nombreCourt(Math.abs(t.entree - I.stops[t.cle])) + ' pts</div>' : '')) + '</td>' : '') +
           '<td class="num gras ' + cls(r) + '">' + (r === null ? '<span class="jaune petit">stop ?</span>' : fmtR(r)) +
+            (t.stoppe ? '<div class="mini rouge" style="white-space:normal;min-width:170px">Le prix est allé ' + nombreCourt(t.ptsContre) + ' pts contre toi, plus loin que ce stop : il aurait sauté. Compté -1 R (sinon ' + fmtR(t.rSorties) + ').</div>' : '') +
             (t.partiels && t.partiels.length ? '<div class="mini gris">' + t.partiels.map(function(x){ return fmtR(x.r, 1) + ' (' + fmtNombre(x.pct, 0) + ' %)'; }).join(' + ') + '</div>' : '') + '</td>' +
           '<td class="num">' + (estNombre(t.mfe) ? fmtR(t.mfe) : '--') + '</td><td class="num">' + (estNombre(t.mae) ? fmtNombre(t.mae, 2) : '--') + '</td></tr>';
       }).join('') + (!tous && res.trades.length > 12 ? '<tr><td colspan="7" class="gris petit">... et ' + (res.trades.length - 12) + ' autres</td></tr>' : '') + '</tbody></table></div>';
@@ -4595,9 +4632,12 @@ function peindreConfigImport(){
   if ($('#imCocher')) $('#imCocher').onchange = function(){ I.cocher = this.checked; };
   $$('.im-stop', boite).forEach(function(inp){
     inp.onchange = function(){
-      var v = versNombre(this.value);
+      var entree = inp.dataset.entree === '' ? null : +inp.dataset.entree;
+      var v = stopDepuisSaisie(this.value, inp.dataset.sens, entree);
       I.stops = I.stops || {};
-      if (v === null) delete I.stops[inp.dataset.cle]; else I.stops[inp.dataset.cle] = v;
+      I.stopsSaisie = I.stopsSaisie || {};
+      if (v === null) { delete I.stops[inp.dataset.cle]; delete I.stopsSaisie[inp.dataset.cle]; }
+      else { I.stops[inp.dataset.cle] = v; I.stopsSaisie[inp.dataset.cle] = this.value.trim(); }
       var y = window.scrollY;
       peindreConfigImport();
       window.scrollTo(0, y);
@@ -4627,7 +4667,8 @@ function peindreConfigImport(){
         rrCible: t.rrCible || (hautTP > 0 ? hautTP : null), mfe: estNombre(t.mfe) ? t.mfe : null, mae: estNombre(t.mae) ? t.mae : null,
         entree: estNombre(t.entree) ? t.entree : null, stop: estNombre(t.stop) ? t.stop : null, cible: null, sortie: estNombre(t.sortie) ? t.sortie : null,
         duree: estNombre(t.duree) ? t.duree : null, qte: estNombre(t.qte) ? t.qte : null, symbole: t.symbole || '', confl: JSON.parse(JSON.stringify(confl)),
-        qualite: t.qualite || '', biais: '', tags: t.tags || [], notes: t.notes || '',
+        qualite: t.qualite || '', biais: '', tags: t.tags || [],
+        notes: t.stoppe ? 'Import : compté stoppé, le prix est allé ' + nombreCourt(t.ptsContre) + ' pts contre ce stop (sorties réelles : ' + fmtR(t.rSorties) + ').' : (t.notes || ''),
         liens: [], douteux: false, nbImages: 0, source: t.source, numTV: t.numTV || null, profit: estNombre(t.profit) ? t.profit : null,
         importCle: t.importCle, cree: maintenant + i
       };

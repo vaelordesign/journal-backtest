@@ -167,9 +167,14 @@ glissés sur le graphique), et importer la séance d'un coup.
 3. À la fin de la séance, **avant de fermer le replay** (TradingView efface tout ensuite) :
    panneau Replay Trading, onglet **Liste des trades**, bouton d'export.
 4. Glisse le fichier dans l'écran **Import** de l'app.
-5. Le fichier ne contient pas ton stop : écris le **prix du stop** de chaque trade dans la
-   colonne Stop (Entrée passe au trade suivant). C'est ce qui donne le R exact.
+5. Le fichier ne contient pas ton **stop** (ton stop loss : le prix où tu sortais en perte si le
+   marché partait contre toi, la ligne SL sur ton graphique). Écris-le dans la colonne **Ton stop**,
+   en prix (21 330,25) ou en points (35) ; Entrée passe au trade suivant. C'est lui qui fixe la taille
+   de 1 R : sans lui, impossible de savoir si +650 $ vaut +1 R ou +3 R.
    Si tu risques toujours le même montant, tu peux plutôt écrire combien vaut 1 R en dollars.
+   **Si le prix est allé plus loin contre toi que ce stop** (le fichier le dit, colonne « Adverse
+   excursion »), ton stop aurait sauté : l'app compte le trade **-1 R**, et te montre ce qu'auraient
+   donné les sorties réelles. C'est la règle d'un backtest honnête.
 6. **Importer.** Les sorties partielles d'un même trade sont regroupées en un seul trade
    (« 3 sorties »), le Run-up devient le MFE et le Drawdown le MAE.
 7. Les étapes obligatoires sont cochées si tu laisses la case « Je n'ai pris que des setups
@@ -213,7 +218,7 @@ envoyées. Le lien ne marche pour quelqu'un d'autre que si l'app est en ligne.
 ## 8. Vérifier les calculs
 
 - Dans l'app : **Réglages**, bouton **Lancer le test**.
-- Le test complet (237 vérifications, chaque résultat calculé à la main) :
+- Le test complet (261 vérifications, chaque résultat calculé à la main) :
 
 ```
 node verifier-moteur.cjs
