@@ -417,7 +417,51 @@ function verif(nom, cond, detail) {
     const csvTxt = await c.ev('var capt = null; var vrai = telecharger; telecharger = function(n, c){ capt = c; return 0; }; exporterCsv(E.trades); telecharger = vrai; return capt;');
     verif('export CSV : colonne des sorties partielles', csvTxt.indexOf('sorties_partielles') > 0 && csvTxt.indexOf('1 R 50 %') > 0);
 
-    console.log('\n19. Test dans la page (Reglages)');
+    console.log('\n19. Le vrai export Replay Trading, donne au bouton du haut');
+    const vrai = '\\ufeffTrade number,Type,Date and time,Signal,Price USD,Size (qty),Size (value),Net PnL USD,Return %,Commission USD,Favorable excursion USD,Favorable excursion %,Adverse excursion USD,Adverse excursion %,Cumulative PnL USD,Cumulative PnL %,Duration (bars)\\n' +
+      '1,Exit long,2025-01-03 11:30,Sell limit order,21443.5,1,42730.5,156.5,0.37,0,156.5,0.37,-209,-0.49,156.5,0.02,51\\n' +
+      '1,Entry long,2025-01-03 09:48,Buy limit order,21365.25,1,42730.5,156.5,0.37,0,156.5,0.37,-209,-0.49,156.5,0.02,51\\n' +
+      '2,Exit long,2025-01-03 13:28,Sell limit order,21492.5,1,42730.5,254.5,0.60,0,254.5,0.60,-209,-0.49,411,0.04,110\\n' +
+      '2,Entry long,2025-01-03 09:48,Buy limit order,21365.25,1,42730.5,254.5,0.60,0,254.5,0.60,-209,-0.49,411,0.04,110\\n' +
+      '3,Exit long,2025-01-03 16:56,Close position,21485,1,42730.5,239.5,0.56,0,388,0.91,-209,-0.49,650.5,0.07,214\\n' +
+      '3,Entry long,2025-01-03 09:48,Buy limit order,21365.25,1,42730.5,239.5,0.56,0,388,0.91,-209,-0.49,650.5,0.07,214';
+    verif('bouton du haut renomme', (await c.ev('return document.querySelector("#btnRestaurer").textContent')).indexOf('Restaurer une sauvegarde') >= 0);
+    await c.ev('allerA("seance"); IMPORT = null; await importerSauvegarde(new File(["' + vrai + '"], "Replay_Trading_CME_MINI_MNQ1!_2026-10-10_7994d.csv", { type: "text/csv" })); await new Promise(r => setTimeout(r, 400));');
+    verif('la liste de trades part dans l\'ecran Import (plus de « JSON illisible »)', await c.ev('return E.ecran === "import" && IMPORT && IMPORT.type === "tv"'));
+    verif('1 trade, 3 sorties partielles regroupees', (await c.ev('return document.querySelector("#imConfig").textContent')).split(' ').join(' ').indexOf('1 trade, dont 1 avec des sorties partielles') >= 0);
+    await c.ev('var i = document.querySelector(".im-stop"); i.value = "21255,25"; i.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 300));');
+    verif('avec le stop : +0,99 R', (await c.ev('return document.querySelector("#imConfig").textContent')).indexOf('+0,99 R') >= 0);
+    await c.capture(path.join(SHOTS, 'import-vrai-replay.png'), true);
+    await c.ev('document.querySelector("#imOk").click(); await new Promise(r => setTimeout(r, 500));');
+    const tv3 = await c.ev('var t = E.trades.filter(x => x.date === "2025-01-03" && x.source === "tv-strategie")[0]; return t && [t.issue, t.partiels.length, rDuTrade(t), t.mfe, t.mae, t.stop];');
+    verif('importe : 3 sorties, +0,9856 R, MFE 1,764, MAE 0,95, stop garde', JSON.stringify(tv3) === JSON.stringify(['partiels', 3, 0.9856, 1.764, 0.95, 21255.25]), tv3);
+    // un Excel a 4 onglets comme celui de TradingView : la liste est dans le dernier
+    const xl = await c.ev(`
+      await chargerSheetJS();
+      var wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Metric', 'All'], ['Net profit', 650.5]]), 'Performance');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['x']]), 'Trades analysis');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['y']]), 'Risk-adjusted performance');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        ['Trade number', 'Type', 'Date and time', 'Signal', 'Price', 'Size', 'Net PnL', 'Return', 'Commission', 'Favorable excursion', 'Adverse excursion', 'Cumulative PnL', 'Duration (bars)'],
+        [7, 'Exit short', 45700.4583333333, 'Buy limit order', 20950, 1, 100, 0.002, 0, 120, -40, 100, 10],
+        [7, 'Entry short', 45700.4166666667, 'Sell limit order', 21000, 1, 100, 0.002, 0, 120, -40, 100, 10]]), 'Trades');
+      var buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+      var lignes = await lireFichierImport(new File([buf], 'Replay_Trading.xlsx'));
+      var vide = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(vide, XLSX.utils.aoa_to_sheet([['Metric', 'All']]), 'Performance');
+      XLSX.utils.book_append_sheet(vide, XLSX.utils.aoa_to_sheet([['Trade number', 'Type', 'Date and time', 'Signal', 'Price', 'Size', 'Net PnL', 'Return', 'Commission', 'Favorable excursion', 'Adverse excursion', 'Cumulative PnL', 'Duration (bars)'], ['', '', '', '', '', '', '', '', '', '', '', '', '']]), 'Trades');
+      var lignesVide = await lireFichierImport(new File([XLSX.write(vide, { type: 'array', bookType: 'xlsx' })], 'vide.xlsx'));
+      var t = lireListeTradesTV(lignes, 0, { '2025-02-12 10:00|short|21000': 21025 }).trades[0];
+      return { premier: lignes[0][0], n: lignes.length, date: t.date, heure: t.heure, r: t.r, vide: lignesVide.length };
+    `);
+    verif('Excel : l\'onglet « Trades » est trouve, pas « Performance »', xl.premier === 'Trade number' && xl.n === 3, xl);
+    verif('Excel : le trade est lu (12 fevrier 10:00, short, +2 R)', xl.date === '2025-02-12' && xl.heure === '10:00' && xl.r === 2, xl);
+    verif('Excel vide : aucune ligne de trade', xl.vide === 1, xl);
+    await c.ev('IMPORT = null; allerA("import"); await recevoirFichierImport(new File(["Trade number,Type,Date and time,Signal,Price,Size,Net PnL\\\\n,,,,,,"], "vide.csv")); await new Promise(r => setTimeout(r, 200));');
+    verif('fichier sans trade : message clair', (await c.ev('return document.getElementById("pileMessages").textContent')).indexOf('aucun trade') >= 0);
+
+    console.log('\n20. Test dans la page (Reglages)');
     await c.aller(URL_APP + '#reglages');
     await c.ev('document.querySelector("#reTest").click(); await new Promise(r => setTimeout(r, 300));');
     const at = await c.ev('return document.querySelector("#reTestSortie").innerText');

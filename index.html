@@ -424,8 +424,8 @@ table.chaleur td.cell.actuel{box-shadow:inset 0 0 0 2px var(--jaune)}
     <div class="entete-droite">
       <a class="petit" id="lienJournal" href="../journal-trading/#bord" title="Ton journal de trading réel">Journal réel &#8599;</a>
       <button class="pt" id="btnPartager">&#128279; Partager</button>
-      <button class="pt" id="btnSauvegarde">&#128190; Exporter</button>
-      <button class="pt" id="btnRestaurer">&#128228; Importer</button>
+      <button class="pt" id="btnSauvegarde" title="Télécharger une sauvegarde complète de l'app (fichier .json)">&#128190; Sauvegarder</button>
+      <button class="pt" id="btnRestaurer" title="Remettre une sauvegarde .json de l'app. Pour tes trades TradingView, c'est l'onglet Import.">&#128194; Restaurer une sauvegarde</button>
       <input type="file" id="fichierSauvegarde" accept=".json,application/json" hidden>
     </div>
   </div>
@@ -1359,10 +1359,10 @@ function colonnesTV(entetes){
     type: colonneTV(entetes, ['type']),
     date: colonneTV(entetes, ['datetime', 'dateandtime', 'dateheure', 'date', 'time']),
     prix: colonneTV(entetes, ['price', 'prix']),
-    profit: colonneTV(entetes, ['netpl', 'netprofit', 'profit', 'pnl', 'plnet', 'pnlnet', 'resultatnet', 'gainnet'], ['cumul']),
+    profit: colonneTV(entetes, ['netpnl', 'netpl', 'netprofit', 'profit', 'pnl', 'plnet', 'pnlnet', 'resultatnet', 'gainnet'], ['cumul']),
     runup: colonneTV(entetes, ['runup', 'maxrunup', 'favorable']),
     drawdown: colonneTV(entetes, ['drawdown', 'maxdrawdown', 'adverse']),
-    qte: colonneTV(entetes, ['contracts', 'positionsizeqty', 'quantity', 'qty', 'quantite']),
+    qte: colonneTV(entetes, ['contracts', 'positionsizeqty', 'sizeqty', 'quantity', 'qty', 'quantite', 'contrats', 'size', 'taille'], ['value', 'valeur']),
     signal: colonneTV(entetes, ['signal'])
   };
 }
@@ -1415,16 +1415,19 @@ function calculerTradeTV(g, unR, stop){
     niveaux = g.sorties.map(function(x){ return (x.profit / (x.qte || 1)) * Q / unR; });
   }
   if (!niveaux) return res;
+  // les niveaux sont arrondis AVANT de faire la somme : le R du trade est alors exactement celui
+  // que rDesPartiels retrouvera plus tard depuis les parts enregistrees.
+  niveaux = niveaux.map(function(x){ return arrondi(x, 4); });
   var r = 0;
   g.sorties.forEach(function(x, i){ r += (x.qte || 1) / Q * niveaux[i]; });
-  res.r = arrondi(r, 3);
+  res.r = arrondi(r, 4);
   if (risque) {
     if (ru !== null) res.mfe = arrondi(ru * Q / risque, 3);
     if (dd !== null) res.mae = arrondi(dd * Q / risque, 3);
   }
   if (g.sorties.length > 1) {
     res.partiels = g.sorties.map(function(x, i){
-      return { r: arrondi(niveaux[i], 3), pct: arrondi(100 * (x.qte || 1) / Q, 4), touche: true, sortie: true, prix: x.prix, heure: x.heure };
+      return { r: niveaux[i], pct: arrondi(100 * (x.qte || 1) / Q, 4), touche: true, sortie: true, prix: x.prix, heure: x.heure };
     });
   }
   return res;
@@ -4407,21 +4410,26 @@ function chargerSheetJS(){
 function nettoyerLignes(lignes){
   var i = 0;
   while (i < lignes.length && lignes[i].filter(function(x){ return String(x).trim() !== ''; }).length < 3) i++;
-  return lignes.slice(i).map(function(l){ return l.map(function(x){ return typeof x === 'number' ? x : String(x == null ? '' : x).trim(); }); });
+  return lignes.slice(i)
+    .map(function(l){ return l.map(function(x){ return typeof x === 'number' ? x : String(x == null ? '' : x).trim(); }); })
+    .filter(function(l){ return l.some(function(x){ return x !== ''; }); });
 }
 async function lireFichierImport(f){
   var lignes;
   if (/\.xlsx?$/i.test(f.name)) {
     await chargerSheetJS();
     var wb = window.XLSX.read(await f.arrayBuffer(), { type: 'array' });
-    lignes = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+    // L'export du Replay Trading a 4 onglets (Performance, Trades analysis, Risk-adjusted performance,
+    // Trades) : on prend celui qui ressemble a une liste de trades, sinon le premier.
+    var feuilles = wb.SheetNames.map(function(n){ return nettoyerLignes(window.XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' })); });
+    lignes = feuilles.filter(function(l){ return l.length && estListeTradesTV(l[0]); })[0] || feuilles[0] || [];
   } else lignes = parserCSV(await f.text());
   return nettoyerLignes(lignes);
 }
 async function recevoirFichierImport(f){
   try {
     var lignes = await lireFichierImport(f);
-    if (lignes.length < 2) { toast('Le fichier ne contient pas de lignes de trades.', 'rougef'); return; }
+    if (lignes.length < 2) { toast('<b>Ce fichier ne contient aucun trade</b> (seulement les titres des colonnes). Dans TradingView, exporte la Liste des trades <b>après</b> avoir passé tes ordres, et avant de fermer le replay.', 'rougef'); return; }
     var tv = estListeTradesTV(lignes[0]);
     var camp = E.filtre.campagne || E.reglages.campagneActive || (E.campagnes[0] && E.campagnes[0].id) || '';
     var strat = strategieDeCampagne(campagneDe(camp));
@@ -4755,7 +4763,18 @@ async function exporterTout(avecImages){
 }
 async function importerSauvegarde(fichier){
   var p;
-  try { p = JSON.parse(await fichier.text()); } catch (e) { toast('Ce fichier n\'est pas un JSON lisible.', 'rougef'); return; }
+  var versImport = function(){
+    toast('Ce fichier est une <b>liste de trades</b>, pas une sauvegarde de l\'app : je l\'ouvre dans l\'écran Import.', 'bleuf');
+    allerA('import');
+    return recevoirFichierImport(fichier);
+  };
+  if (/\.(csv|txt|xlsx?|tsv)$/i.test(fichier.name || '')) return versImport();
+  try { p = JSON.parse(await fichier.text()); }
+  catch (e) {
+    if (/[,;\t]/.test((await fichier.text()).split(/\r?\n/)[0] || '')) return versImport();
+    toast('Ce fichier n\'est ni une sauvegarde de l\'app (.json), ni une liste de trades.', 'rougef');
+    return;
+  }
   if (!p || p.format !== 'journal-backtest') {
     if (p && p.format === 'journal-trading') { toast('C\'est une sauvegarde du journal de TRADING. Pour la comparer, va dans l\'écran Comparer.', 'jaunef'); return; }
     if (!await confirmer('Ce fichier ne porte pas la marque du journal de backtest. Essayer quand même ?', 'Essayer')) return;
@@ -5006,6 +5025,19 @@ function brancher(){
     else if (k === 'j') { e.preventDefault(); terminerJour(c); }
     else if (k === 's') { e.preventDefault(); changerJour(c, jourOuvrable(c.jourCourant, 1)); }
     else if (k === 'p') { e.preventDefault(); changerJour(c, jourOuvrable(c.jourCourant, -1)); }
+  });
+  // un CSV ou un Excel lache n'importe ou (hors des zones prevues) part dans l'ecran Import
+  document.addEventListener('dragover', function(e){
+    if (E.rapport || modaleOuverte() || !e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
+    e.preventDefault();
+  });
+  document.addEventListener('drop', function(e){
+    if (E.rapport || modaleOuverte() || !e.dataTransfer || !e.dataTransfer.files.length) return;
+    if (e.target.closest && (e.target.closest('.zone-depot') || e.target.closest('.zone-coller'))) return;
+    var fi = e.dataTransfer.files[0];
+    e.preventDefault();
+    if (/\.json$/i.test(fi.name)) { importerSauvegarde(fi); return; }
+    if (/\.(csv|txt|xlsx?|tsv)$/i.test(fi.name)) { allerA('import'); recevoirFichierImport(fi); }
   });
   // Ctrl+V d'une capture : elle va dans la fiche du trade ouverte
   document.addEventListener('paste', function(e){

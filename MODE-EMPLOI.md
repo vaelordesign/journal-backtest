@@ -19,8 +19,8 @@ Les dollars n'apparaissent que dans le simulateur de challenge, où tu choisis c
 - **Sur l'ordinateur :** double-clic sur `index.html` (Chrome ou Edge).
 - Tes données restent **dans ce navigateur, à cette adresse**. Le fichier ouvert en double-clic
   et la version en ligne (si elle est publiée) ont chacun leur propre mémoire : on passe de
-  l'un à l'autre avec **Exporter** puis **Importer**.
-- **Fais une sauvegarde de temps en temps** (bouton Exporter en haut). Vider les données du
+  l'un à l'autre avec **Sauvegarder** puis **Restaurer une sauvegarde** (boutons en haut à droite).
+- **Fais une sauvegarde de temps en temps** (bouton **Sauvegarder** en haut). Vider les données du
   navigateur efface tout.
 
 ## 2. Le principe : des campagnes
@@ -150,7 +150,11 @@ Il rejoue des milliers de challenges en tirant au hasard dans **tes** journées 
 - Le tableau **Le bon risque par trade** montre tes chances pour 100 $, 150 $... jusqu'à
   1 000 $ par trade.
 
-## 5. Importer
+## 5. Importer tes trades (onglet Import du menu)
+
+Attention : c'est l'onglet **Import** du menu. Le bouton « Restaurer une sauvegarde » en haut à droite sert
+à remettre une sauvegarde de l'app (.json) ; si tu lui donnes quand même une liste de trades, l'app la
+renvoie toute seule vers l'onglet Import. Tu peux aussi glisser ton fichier n'importe où dans l'app.
 
 ### Le plus simple : trader dans le Replay Trading de TradingView
 

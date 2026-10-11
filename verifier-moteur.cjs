@@ -438,6 +438,44 @@ verifier('1 R propose = perte mediane des trades entiers', M.proposerUnR(rp.pert
 verifier('multiplicateur ES 50 $ reconnu malgre 1 % de frais', M.multiplicateurDeduit([{ prix: 5010, qte: 1, profit: 495 }], 5000), 50);
 verifier('multiplicateur inconnu sans mouvement', M.multiplicateurDeduit([{ prix: 5000, qte: 1, profit: 0 }], 5000), null);
 
+titre('16. Un vrai export du Replay Trading (TradingView, 10 oct. 2026)');
+// Le fichier tel quel : BOM, "Trade number", "Size (qty)" et "Size (value)", "Net PnL USD",
+// "Favorable excursion USD", "Adverse excursion USD", pas de retour a la ligne final.
+// Un long MNQ a 21 365,25 coupe en 3 sorties d'un contrat.
+const CSV_REPLAY = '﻿Trade number,Type,Date and time,Signal,Price USD,Size (qty),Size (value),Net PnL USD,Return %,Commission USD,Favorable excursion USD,Favorable excursion %,Adverse excursion USD,Adverse excursion %,Cumulative PnL USD,Cumulative PnL %,Duration (bars)\n' +
+  '1,Exit long,2025-01-03 11:30,Sell limit order,21443.5,1,42730.5,156.5,0.37,0,156.5,0.37,-209,-0.49,156.5,0.02,51\n' +
+  '1,Entry long,2025-01-03 09:48,Buy limit order,21365.25,1,42730.5,156.5,0.37,0,156.5,0.37,-209,-0.49,156.5,0.02,51\n' +
+  '2,Exit long,2025-01-03 13:28,Sell limit order,21492.5,1,42730.5,254.5,0.60,0,254.5,0.60,-209,-0.49,411,0.04,110\n' +
+  '2,Entry long,2025-01-03 09:48,Buy limit order,21365.25,1,42730.5,254.5,0.60,0,254.5,0.60,-209,-0.49,411,0.04,110\n' +
+  '3,Exit long,2025-01-03 16:56,Close position,21485,1,42730.5,239.5,0.56,0,388,0.91,-209,-0.49,650.5,0.07,214\n' +
+  '3,Entry long,2025-01-03 09:48,Buy limit order,21365.25,1,42730.5,239.5,0.56,0,388,0.91,-209,-0.49,650.5,0.07,214';
+const LR = M.parserCSV(CSV_REPLAY);
+const cr = M.colonnesTV(LR[0]);
+verifier('colonnes : Net PnL, Size (qty) et pas Size (value), excursions', [cr.num, cr.type, cr.date, cr.prix, cr.qte, cr.profit, cr.runup, cr.drawdown], [0, 1, 2, 4, 5, 7, 10, 12]);
+verifier('reconnu comme une liste de trades', M.estListeTradesTV(LR[0]), true);
+const cleR = '2025-01-03 09:48|long|21365.25';
+// stop a 21 255,25 : 110 points = 1 R ; 3 contrats a 2 $ le point = 660 $ de risque
+const rr = M.lireListeTradesTV(LR, 0, { [cleR]: 21255.25 });
+const TR = rr.trades[0];
+verifier('un seul trade, 3 sorties', [rr.trades.length, TR.sorties.length, TR.qte, TR.numTV], [1, 3, 3, '1+2+3']);
+verifier('sorties dans l\'ordre du temps', TR.sorties.map(x => x.heure), ['11:30', '13:28', '16:56']);
+verifier('2 $ le point (MNQ) retrouve', TR.multiplicateur, 2);
+verifier('profit 156,5 + 254,5 + 239,5', TR.profit, 650.5);
+verifier('niveaux : 78,25 / 127,25 / 119,75 points sur 110', TR.partiels.map(x => x.r), [0.7114, 1.1568, 1.0886]);
+verifier('resultat (0,7114 + 1,1568 + 1,0886) / 3', TR.r, 0.9856);
+verifier('le meme R recalcule depuis les parts enregistrees', M.rDesPartiels(TR.partiels, null), TR.r);
+verifier('MFE : 388 $ par contrat = 194 points = 1,764 R', TR.mfe, 1.764);
+verifier('MAE : 209 $ par contrat = 104,5 points = 0,95 R', TR.mae, 0.95);
+verifier('duree 09:48 -> 16:56', TR.duree, 428);
+// l'onglet "Trades" de l'export Excel : memes colonnes sans "USD", date en numero de serie
+const LX = [['Trade number', 'Type', 'Date and time', 'Signal', 'Price', 'Size', 'Net PnL', 'Return', 'Commission', 'Favorable excursion', 'Adverse excursion', 'Cumulative PnL', 'Duration (bars)'],
+  [1, 'Exit long', 45660.4791666667, 'Sell limit order', 21443.5, 1, 156.5, 0.0037, 0, 156.5, -209, 156.5, 51],
+  [1, 'Entry long', 45660.4083333333, 'Buy limit order', 21365.25, 1, 156.5, 0.0037, 0, 156.5, -209, 156.5, 51]];
+const cx = M.colonnesTV(LX[0]);
+verifier('Excel : colonnes sans USD reconnues', [cx.prix, cx.qte, cx.profit, cx.runup, cx.drawdown], [4, 5, 6, 9, 10]);
+const tx = M.lireListeTradesTV(LX, 0, { '2025-01-03 09:48|long|21365.25': 21255.25 }).trades[0];
+verifier('Excel : date en numero de serie et R', [tx.date, tx.heure, tx.r], ['2025-01-03', '09:48', 0.7114]);
+
 /* ------------------------------------------------------------------ */
 console.log('\n' + '='.repeat(60));
 console.log((echecs ? 'ECHEC : ' : 'TOUT EST BON : ') + reussites + ' verifications reussies, ' + echecs + ' en echec.');
